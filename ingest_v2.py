@@ -132,6 +132,8 @@ def classify_phase(command: str, action_name: str, tool: str, raw_data: str = ''
 
     # sensor_packet sub-classification using raw_data content
     if action_name == 'sensor_packet':
+        # TODO: attacker_ips is hardcoded for P003 dataset. Make this configurable
+        # via .env or a config file so classification works across different datasets.
         attacker_ips = ('122.10.11.101', '122.10.11.102', '114.0.194.2', '114.231.10.3')
         if any(ip in raw_data for ip in attacker_ips):
             return 'command_and_control', 'TA0011', 'T1071'
@@ -178,14 +180,6 @@ USER_BLACKLIST = {
     'pam_unix(sudo:session):', 'pam_unix(cron:session):', 'pam_unix(su:session):',
     'message', 'None', '', 'none',
     'pam_unix(sshd:session):', 'pam_unix(login:session):',
-}
-
-KNOWN_USERS = {
-    'attacker', 'root', 'jconway', 'ebentley', 'admin1', 'dschroeder',
-    'sseydou', 'myuliana', 'lpark', 'admin', 'jvazquez', 'spayne', 'mchapman',
-    'grasmussen', 'dgilbert', 'zlawrence', 'wramos', 'rmaxwell', 'ppaul',
-    'mwatkins', 'jpowell', 'jmullen', 'astephenson', 'ablankenship', 'tnicholson',
-    'tklein', 'sthornton', 'rpruitt',
 }
 
 def clean_user(raw_user: str) -> str:
@@ -1234,8 +1228,14 @@ def parse_suricata_eve(file_path: Path, participant_id, scenario_name, host) -> 
                 ts_str = ''
                 if ts_raw:
                     try:
-                        ts_str = datetime.fromisoformat(ts_raw.replace('Z', '+00:00')).replace(tzinfo=None).isoformat()
-                    except:
+                        # Normalize compact UTC-offset notation (-0400 → -04:00) for
+                        # Python < 3.11 which cannot parse offsets without the colon.
+                        import re as _re
+                        normalized = _re.sub(
+                            r'([+-])(\d{2})(\d{2})$', r'\1\2:\3', ts_raw
+                        )
+                        ts_str = datetime.fromisoformat(normalized.replace('Z', '+00:00')).replace(tzinfo=None).isoformat()
+                    except Exception:
                         ts_str = ts_raw
 
                 etype = data.get('event_type', '')
@@ -1786,7 +1786,7 @@ def ingest_all(data_root: Path, db: DBv2):
         fname = file_path.name
 
         # Skip binary / large files
-        if fname.endswith('.pcap') or fname.endswith('.ogv') or fname.endswith('.log.pcap'):
+        if fname.endswith('.pcap') or fname.endswith('.ogv') or fname.endswith('.webm') or fname.endswith('.log.pcap'):
             # Register as media event
             db.insert(make_event(
                 participant_id, scenario_name, host, 'media', file_path,

@@ -437,7 +437,7 @@ label.tb-label { color: var(--text-dim); font-size: 11px; white-space: nowrap; }
     <span class="phase-badge pb-persist"   data-phase="persistence">Persist</span>
     <span class="phase-badge pb-lateral"   data-phase="lateral_movement">Lateral</span>
     <span class="phase-badge pb-exfil"     data-phase="exfiltration">Exfil</span>
-    <span class="phase-badge pb-c2"        data-phase="c2">C2</span>
+    <span class="phase-badge pb-c2"        data-phase="command_and_control">C2</span>
     <span class="phase-badge pb-unknown"   data-phase="unknown">?</span>
   </div>
   <span id="current-phase-text"></span>
@@ -650,7 +650,11 @@ async function loadParticipant(pid) {
 
   // 4. Compute time bounds across all media
   const allEpochs = media.map(m => isoToEpoch(m.start_timestamp)).filter(Boolean);
-  const allEnds   = media.map(m => isoToEpoch(m.start_timestamp) + (m.duration_seconds || 3600)).filter(Boolean);
+  // Only include items with a real duration — fallback to 3600 skews globalEnd
+  const allEnds   = media
+    .filter(m => m.duration_seconds > 0)
+    .map(m => isoToEpoch(m.start_timestamp) + m.duration_seconds)
+    .filter(Boolean);
 
   if (allEpochs.length === 0) {
     hideLoading();
@@ -1052,11 +1056,11 @@ function drawMediaRanges(W, H) {
 
   allMedia.forEach((m, trackIdx) => {
     const start = isoToEpoch(m.start_timestamp);
-    const dur = m.duration_seconds || 3600;
+    const dur = m.duration_seconds > 0 ? m.duration_seconds : (S.globalEnd - start);
     const end = start + dur;
     const x1 = ((start - S.globalStart) / totalSpan) * W;
     const x2 = ((end   - S.globalStart) / totalSpan) * W;
-    const y = H - 6 - trackIdx * 5;
+    const y = Math.max(2, H - 6 - trackIdx * 5);  // clamp: prevent negative y with many tracks
 
     ctx.fillStyle = trackColors[m.media_type] || '#555';
     ctx.globalAlpha = 0.7;
@@ -1079,7 +1083,7 @@ function drawTimeLabels() {
 let fetchAbortCtrl = null;
 
 async function fetchAllPanels() {
-  if (!S.participantId || !S.cursorEpoch) return;
+  if (!S.participantId || S.cursorEpoch === null || S.cursorEpoch === undefined) return;
 
   if (fetchAbortCtrl) fetchAbortCtrl.abort();
   fetchAbortCtrl = new AbortController();
@@ -1237,10 +1241,11 @@ function renderKeylogger(events) {
   if (!events.length) { body.innerHTML = '<div class="ev-row"><div class="ev-meta">no events in window</div></div>'; return; }
 
   const html = events.slice(-80).map(e => {
-    const typed = e.typed_text || e.key_info || '';
-    const app = e.app_name || '';
-    const win = e.window_title || '';
-    const evtype = e.event_type || e.action_name || '';
+    const typed = e.typed_text || '';
+    // UAT events store app/window in e.tool; fall back to action_name for event type label
+    const app = e.tool || '';
+    const win = e.window || '';
+    const evtype = e.action_name || '';
     return `<div class="ev-row">
       <div class="ev-time">${timeLabel(e.timestamp_utc)}</div>
       ${typed ? `<div class="ev-main key-typed">${escHtml(typed.slice(0, 120))}</div>` : `<div class="ev-meta">${escHtml(evtype)}</div>`}

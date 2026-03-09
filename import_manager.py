@@ -205,14 +205,15 @@ def fix_suricata_timestamps(con: sqlite3.Connection, data_root: Path):
         sign = '+' if detected_offset_hours >= 0 else '-'
         abs_h = int(abs(detected_offset_hours))
         abs_m = int((abs(detected_offset_hours) % 1) * 60)
+        # Build a single interval string so both hours AND minutes are applied
         interval = f"{sign}{abs_h} hours"
         if abs_m:
-            interval += f", {sign}{abs_m} minutes"
+            interval = f"{sign}{abs_h} hours {sign}{abs_m} minutes"
 
         con.execute(
             f"""UPDATE events
                SET timestamp_utc = strftime('%Y-%m-%dT%H:%M:%f',
-                                   datetime(timestamp_utc, '{sign}{abs_h} hours'))
+                                   datetime(timestamp_utc, '{interval}'))
                WHERE participant_id=? AND source_type='suricata'""",
             (pid,)
         )

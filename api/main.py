@@ -106,6 +106,7 @@ async def get_participants():
             MIN(NULLIF(timestamp_utc, '')) as first_seen,
             MAX(timestamp_utc) as last_seen
         FROM events
+        WHERE participant_id != '' AND participant_id IS NOT NULL
         GROUP BY participant_id
         ORDER BY participant_id
     """)
@@ -631,40 +632,41 @@ async def get_alerts(participant_id: Optional[str] = None, severity: Optional[st
 @app.get("/api/relationships")
 async def get_relationships(participant_id: Optional[str] = None):
     """Entity graph data: host-user, host-tool, user-tool, ip-host."""
-    cond = f"AND participant_id = '{participant_id}'" if participant_id else ""
+    pid_cond = "AND participant_id = ?" if participant_id else ""
+    pid_param = (participant_id,) if participant_id else ()
 
     host_users = q(f"""
         SELECT source_host as source, user as target, COUNT(*) as weight
         FROM events
         WHERE source_host != '' AND source_host IS NOT NULL
-          AND user != '' AND user IS NOT NULL {cond}
+          AND user != '' AND user IS NOT NULL {pid_cond}
         GROUP BY source_host, user ORDER BY weight DESC LIMIT 100
-    """)
+    """, pid_param)
 
     host_tools = q(f"""
         SELECT source_host as source, tool as target, COUNT(*) as weight
         FROM events
         WHERE source_host != '' AND source_host IS NOT NULL
-          AND tool != '' AND tool IS NOT NULL {cond}
+          AND tool != '' AND tool IS NOT NULL {pid_cond}
         GROUP BY source_host, tool ORDER BY weight DESC LIMIT 100
-    """)
+    """, pid_param)
 
     user_tools = q(f"""
         SELECT user as source, tool as target, COUNT(*) as weight
         FROM events
         WHERE user != '' AND user IS NOT NULL
-          AND tool != '' AND tool IS NOT NULL {cond}
+          AND tool != '' AND tool IS NOT NULL {pid_cond}
         GROUP BY user, tool ORDER BY weight DESC LIMIT 100
-    """)
+    """, pid_param)
 
     ip_hosts = q(f"""
         SELECT src_ip as source, source_host as target, COUNT(*) as weight
         FROM events
         WHERE src_ip != '' AND src_ip IS NOT NULL
           AND src_ip != '0.0.0.0'
-          AND source_host != '' AND source_host IS NOT NULL {cond}
+          AND source_host != '' AND source_host IS NOT NULL {pid_cond}
         GROUP BY src_ip, source_host ORDER BY weight DESC LIMIT 100
-    """)
+    """, pid_param)
 
     return {
         "host_user": host_users,
@@ -681,19 +683,19 @@ async def get_relationships(participant_id: Optional[str] = None):
 @app.get("/api/media")
 async def get_media(participant_id: Optional[str] = None):
     """All video and terminal recording references."""
-    conds = ["action_category = 'media'"]
+    conds: list = []
     params: list = []
     if participant_id:
         conds.append("participant_id = ?")
         params.append(participant_id)
 
-    where = " AND ".join(conds)
+    where = " AND ".join(conds) if conds else "1=1"
     rows = q(f"""
-        SELECT event_id, participant_id, source_host, source_file,
-               action_name, timestamp_utc, extra_data
-        FROM events
+        SELECT media_id, participant_id, source_host, source_file,
+               media_type, start_timestamp, duration_seconds, panel
+        FROM media_registry
         WHERE {where}
-        ORDER BY participant_id, source_host
+        ORDER BY participant_id, start_timestamp
     """, tuple(params))
     return {"media": rows}
 
@@ -821,31 +823,32 @@ async def get_event(event_id: str):
 
 @app.get("/api/network")
 async def get_network(participant_id: Optional[str] = None):
-    cond = f"AND participant_id = '{participant_id}'" if participant_id else ""
+    pid_cond = "AND participant_id = ?" if participant_id else ""
+    pid_param = (participant_id,) if participant_id else ()
 
     src_ips = q(f"""
         SELECT src_ip, COUNT(*) n FROM events
-        WHERE src_ip != '' AND src_ip IS NOT NULL AND src_ip != '0.0.0.0' {cond}
+        WHERE src_ip != '' AND src_ip IS NOT NULL AND src_ip != '0.0.0.0' {pid_cond}
         GROUP BY src_ip ORDER BY n DESC LIMIT 30
-    """)
+    """, pid_param)
     dest_ips = q(f"""
         SELECT dest_ip, COUNT(*) n FROM events
-        WHERE dest_ip != '' AND dest_ip IS NOT NULL AND dest_ip != '0.0.0.0' {cond}
+        WHERE dest_ip != '' AND dest_ip IS NOT NULL AND dest_ip != '0.0.0.0' {pid_cond}
         GROUP BY dest_ip ORDER BY n DESC LIMIT 30
-    """)
+    """, pid_param)
     protocols = q(f"""
         SELECT protocol, COUNT(*) n FROM events
-        WHERE protocol != '' AND protocol IS NOT NULL {cond}
+        WHERE protocol != '' AND protocol IS NOT NULL {pid_cond}
         GROUP BY protocol ORDER BY n DESC
-    """)
+    """, pid_param)
     top_connections = q(f"""
         SELECT src_ip, dest_ip, protocol, COUNT(*) n FROM events
         WHERE src_ip != '' AND src_ip IS NOT NULL
           AND dest_ip != '' AND dest_ip IS NOT NULL
-          AND src_ip != '0.0.0.0' AND dest_ip != '0.0.0.0' {cond}
+          AND src_ip != '0.0.0.0' AND dest_ip != '0.0.0.0' {pid_cond}
         GROUP BY src_ip, dest_ip, protocol
         ORDER BY n DESC LIMIT 50
-    """)
+    """, pid_param)
 
     return {
         "source_ips": src_ips,
@@ -977,7 +980,11 @@ def _count_project_events(project_id: str, project_type: str, filter_json: dict,
 def list_projects():
     con = sqlite3.connect(str(DB_PATH))
     con.row_factory = sqlite3.Row
-    rows = con.execute("SELECT * FROM projects ORDER BY created_at DESC").fetchall()
+    try:
+        rows = con.execute("SELECT * FROM projects ORDER BY created_at DESC").fetchall()
+    except sqlite3.OperationalError:
+        con.close()
+        return []
     con.close()
     result = []
     for r in rows:
@@ -1315,10 +1322,16 @@ async def timeline_sync(
     if not media_rows:
         return {"media_items": [], "sync_markers": []}
     
-    # Calculate time range
-    start_unix = min(m['start_unix'] for m in media_rows if m['start_unix'])
-    end_unix = max(m['end_unix'] for m in media_rows if m['end_unix'])
-    duration = end_unix - start_unix if start_unix and end_unix else 0
+    # Calculate time range — parse start_timestamp (ISO UTC) rather than
+    # trusting start_unix which is a broken relative offset in old data.
+    def _iso_to_epoch(iso: str) -> float:
+        return datetime.fromisoformat(iso + 'Z').timestamp() if iso and not iso.endswith('Z') else datetime.fromisoformat(iso.replace('Z', '+00:00')).timestamp()
+
+    valid_starts = [_iso_to_epoch(m['start_timestamp']) for m in media_rows if m.get('start_timestamp')]
+    valid_ends   = [_iso_to_epoch(m['end_timestamp'])   for m in media_rows if m.get('end_timestamp')]
+    start_unix = min(valid_starts) if valid_starts else None
+    end_unix   = max(valid_ends)   if valid_ends   else None
+    duration = end_unix - start_unix if start_unix is not None and end_unix is not None else 0
     
     # Get event markers for timeline
     event_markers = q("""
@@ -1378,24 +1391,31 @@ async def timeline_cast(
     
     media = row[0]
     
-    # Get commands in range
-    offset_col = "offset_seconds"
+    # Get media start epoch from start_timestamp (start_unix is unreliable)
+    media_start_ts = media.get('start_timestamp')
+    media_start_epoch = None
+    if media_start_ts:
+        iso = media_start_ts if media_start_ts.endswith('Z') else media_start_ts + 'Z'
+        media_start_epoch = datetime.fromisoformat(iso.replace('Z', '+00:00')).timestamp()
+
+    # Get commands in range — filter by timestamp_utc since offset_seconds does not exist
     conds = ["source_type = 'terminal_recording'", "source_file = ?"]
     params = [media['source_file']]
-    
-    if start_offset is not None:
-        conds.append(f"{offset_col} >= ?")
-        params.append(start_offset)
-    if end_offset is not None:
-        conds.append(f"{offset_col} <= ?")
-        params.append(end_offset)
+
+    if media_start_epoch is not None:
+        if start_offset is not None:
+            conds.append("timestamp_utc >= ?")
+            params.append(datetime.utcfromtimestamp(media_start_epoch + start_offset).isoformat())
+        if end_offset is not None:
+            conds.append("timestamp_utc <= ?")
+            params.append(datetime.utcfromtimestamp(media_start_epoch + end_offset).isoformat())
     
     where = " AND ".join(conds)
     commands = q(f"""
-        SELECT offset_seconds, timestamp_utc, command
+        SELECT timestamp_utc, command
         FROM events
         WHERE {where}
-        ORDER BY offset_seconds
+        ORDER BY timestamp_utc
     """, tuple(params))
     
     return {
@@ -1419,24 +1439,31 @@ async def timeline_uat(
     
     media = row[0]
     
-    # Get typed text in range
-    offset_col = "offset_seconds"
+    # Get media start epoch from start_timestamp (start_unix is unreliable)
+    media_start_ts = media.get('start_timestamp')
+    media_start_epoch = None
+    if media_start_ts:
+        iso = media_start_ts if media_start_ts.endswith('Z') else media_start_ts + 'Z'
+        media_start_epoch = datetime.fromisoformat(iso.replace('Z', '+00:00')).timestamp()
+
+    # Get typed text in range — filter by timestamp_utc since offset_seconds does not exist
     conds = ["source_type = 'uat'", "source_file = ?"]
     params = [media['source_file']]
-    
-    if start_offset is not None:
-        conds.append(f"{offset_col} >= ?")
-        params.append(start_offset)
-    if end_offset is not None:
-        conds.append(f"{offset_col} <= ?")
-        params.append(end_offset)
+
+    if media_start_epoch is not None:
+        if start_offset is not None:
+            conds.append("timestamp_utc >= ?")
+            params.append(datetime.utcfromtimestamp(media_start_epoch + start_offset).isoformat())
+        if end_offset is not None:
+            conds.append("timestamp_utc <= ?")
+            params.append(datetime.utcfromtimestamp(media_start_epoch + end_offset).isoformat())
     
     where = " AND ".join(conds)
     keystrokes = q(f"""
-        SELECT offset_seconds, timestamp_utc, typed_text, window, tool
+        SELECT timestamp_utc, typed_text, window, tool
         FROM events
         WHERE {where}
-        ORDER BY offset_seconds
+        ORDER BY timestamp_utc
     """, tuple(params))
     
     return {
@@ -1460,21 +1487,21 @@ async def timeline_pcap(
     
     media = row[0]
     
-    # Get network events in range
-    offset_col = "offset_seconds"
+    # Get network events in range — derive base epoch from start_timestamp (ISO UTC)
+    # because start_unix is a broken relative offset in old data.
     conds = ["source_type IN ('zeek', 'suricata')", "participant_id = ?"]
     params = [media['participant_id']]
-    
-    if media['start_unix']:
-        base_ts = media['start_unix']
+
+    media_start_ts = media.get('start_timestamp')
+    if media_start_ts:
+        iso = media_start_ts if media_start_ts.endswith('Z') else media_start_ts + 'Z'
+        base_ts = datetime.fromisoformat(iso.replace('Z', '+00:00')).timestamp()
         if start_offset is not None:
             ts_start = base_ts + start_offset
-            from datetime import datetime
             conds.append("timestamp_utc >= ?")
             params.append(datetime.utcfromtimestamp(ts_start).isoformat())
         if end_offset is not None:
             ts_end = base_ts + end_offset
-            from datetime import datetime
             conds.append("timestamp_utc <= ?")
             params.append(datetime.utcfromtimestamp(ts_end).isoformat())
     
@@ -1520,38 +1547,41 @@ async def timeline_events(
     # Get all events for participant first, then filter by offset
     rows = q(f"""
         SELECT timestamp_utc, source_type, action_name, command, typed_text, user, 
-               source_host, attack_phase, src_ip, dest_ip, dest_port, protocol, offset_seconds
+               source_host, attack_phase, src_ip, dest_ip, dest_port, protocol
         FROM events
         WHERE {where}
         ORDER BY timestamp_utc
         LIMIT ?
     """, tuple(params + [limit]))
     
-    # Get media start time for this participant to calculate relative offsets
+    # Get media start time for this participant using start_timestamp (start_unix unreliable)
     media_start = q("""
-        SELECT MIN(start_unix) as start_ts 
+        SELECT MIN(start_timestamp) as start_ts 
         FROM media_registry 
         WHERE participant_id = ?
     """, (participant_id,))
     
-    base_offset = media_start[0]['start_ts'] if media_start else 0
+    base_offset_ts = media_start[0]['start_ts'] if media_start else None
+    base_offset = 0
+    if base_offset_ts:
+        try:
+            iso = base_offset_ts if base_offset_ts.endswith('Z') else base_offset_ts + 'Z'
+            base_offset = datetime.fromisoformat(iso.replace('Z', '+00:00')).timestamp()
+        except Exception:
+            base_offset = 0
     
     # Filter and add relative offset
     filtered = []
     for row in rows:
-        # Calculate offset if not present
-        offset = row.get('offset_seconds', 0)
-        if offset is None or offset == 0:
-            # Calculate from timestamp
-            try:
-                from datetime import datetime
-                ts_str = row['timestamp_utc']
-                if ts_str:
-                    dt = datetime.fromisoformat(ts_str.replace('Z', '+00:00'))
-                    event_offset = (dt.timestamp() - base_offset) if base_offset else 0
-                    offset = event_offset
-            except:
-                offset = 0
+        # Calculate offset from timestamp_utc relative to media start
+        offset = 0.0
+        try:
+            ts_str = row['timestamp_utc']
+            if ts_str:
+                dt = datetime.fromisoformat(ts_str.replace('Z', '+00:00'))
+                offset = (dt.timestamp() - base_offset) if base_offset else 0.0
+        except Exception:
+            offset = 0.0
         
         # Filter by offset range if provided
         if start_offset is not None and offset < start_offset:
@@ -1563,8 +1593,6 @@ async def timeline_events(
         filtered.append(row)
     
     return {"events": filtered, "base_offset": base_offset}
-    
-    return {"events": rows}
 
 
 @app.get("/api/timeline/playback")
@@ -1573,12 +1601,12 @@ async def timeline_playback(
     offset_seconds: float = 0
 ):
     """Get synchronized playback state at specific offset"""
-    # Get all media for participant
+    # Get all media for participant — use start_timestamp, not start_unix (broken in old data)
     media = q("""
-        SELECT media_id, media_type, source_file, start_unix, panel
+        SELECT media_id, media_type, source_file, start_timestamp, duration_seconds, panel
         FROM media_registry
         WHERE participant_id = ?
-        ORDER BY start_unix
+        ORDER BY start_timestamp
     """, (participant_id,))
     
     result = {
@@ -1595,15 +1623,20 @@ async def timeline_playback(
     
     if not media:
         return result
-    
-    # Calculate absolute timestamp
-    base_unix = media[0]['start_unix']
+
+    def _iso_epoch(iso: str) -> float:
+        s = iso if iso.endswith('Z') else iso + 'Z'
+        return datetime.fromisoformat(s.replace('Z', '+00:00')).timestamp()
+
+    # Calculate absolute timestamp from media[0] start_timestamp
+    base_unix = _iso_epoch(media[0]['start_timestamp'])
     result['timestamp'] = base_unix + offset_seconds
     
     for m in media:
         panel = m['panel']
-        media_start = m['start_unix']
-        media_end = media_start + 3600  # Rough estimate
+        media_start = _iso_epoch(m['start_timestamp'])
+        media_dur = m['duration_seconds'] or 3600
+        media_end = media_start + media_dur
         
         if offset_seconds >= (media_start - base_unix) and offset_seconds <= (media_end - base_unix):
             if panel == 'video':
@@ -1614,34 +1647,35 @@ async def timeline_playback(
                     "seek_to": offset_seconds - (media_start - base_unix)
                 }
             elif panel == 'terminal':
-                # Get command at this time
-                cmd_offset = offset_seconds - (media_start - base_unix)
+                # Get command at this time using timestamp_utc (no offset_seconds column)
+                cmd_abs_ts = datetime.utcfromtimestamp(base_unix + offset_seconds).isoformat()
                 cmds = q("""
-                    SELECT command, offset_seconds, timestamp_utc
+                    SELECT command, timestamp_utc
                     FROM events
                     WHERE source_type = 'terminal_recording'
                     AND source_file = ?
-                    AND offset_seconds <= ?
-                    ORDER BY offset_seconds DESC
+                    AND timestamp_utc <= ?
+                    ORDER BY timestamp_utc DESC
                     LIMIT 1
-                """, (m['source_file'], cmd_offset))
+                """, (m['source_file'], cmd_abs_ts))
                 result['terminal'] = {
                     "available": True,
                     "media_id": m['media_id'],
                     "current_command": cmds[0]['command'] if cmds else "",
-                    "command_offset": cmds[0]['offset_seconds'] if cmds else 0
+                    "command_timestamp": cmds[0]['timestamp_utc'] if cmds else ""
                 }
             elif panel == 'keylogger':
-                # Get typed text
+                # Get typed text using timestamp_utc (no offset_seconds column)
+                kd_abs_ts = datetime.utcfromtimestamp(base_unix + offset_seconds).isoformat()
                 kd = q("""
-                    SELECT typed_text, offset_seconds
+                    SELECT typed_text, timestamp_utc
                     FROM events
                     WHERE source_type = 'uat'
                     AND source_file = ?
-                    AND offset_seconds <= ?
-                    ORDER BY offset_seconds DESC
+                    AND timestamp_utc <= ?
+                    ORDER BY timestamp_utc DESC
                     LIMIT 1
-                """, (m['source_file'], offset_seconds - (media_start - base_unix)))
+                """, (m['source_file'], kd_abs_ts))
                 result['keylogger'] = {
                     "available": True,
                     "media_id": m['media_id'],
@@ -1651,7 +1685,6 @@ async def timeline_playback(
                 result['network']['available'] = True
     
     # Get logs at this time
-    from datetime import datetime
     ts = datetime.utcfromtimestamp(result['timestamp']).isoformat()
     logs = q("""
         SELECT timestamp_utc, source_type, action_name, command
