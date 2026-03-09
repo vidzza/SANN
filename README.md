@@ -2,6 +2,8 @@
 
 Plataforma de análisis de escenarios de ciberseguridad. Visualiza grabaciones de pantalla sincronizadas con eventos de red, terminal, autenticación, syslog y más en una interfaz HUD estilo Palantir.
 
+![GOD EYE Interface](TH.png)
+
 ## Requisitos
 
 - Python 3.11+
