@@ -1,0 +1,38 @@
+# ── Datos / bases de datos ──────────────────────────────────────────────────
+data/*.db
+data/extracted/
+*.db
+*.db-shm
+*.db-wal
+
+# ── Dataset bruto (nunca sube a git) ────────────────────────────────────────
+# Ponlo donde quieras en tu máquina y configura DATA_ROOT en .env
+*.webm
+*.ogv
+*.cast
+*.pcap
+*.pcapng
+
+# ── Variables de entorno (contiene rutas locales) ───────────────────────────
+.env
+
+# ── Python ──────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+env/
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+
+# ── Logs / output ────────────────────────────────────────────────────────────
+logs/
+output/
+*.log
+
+# ── OS ───────────────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db

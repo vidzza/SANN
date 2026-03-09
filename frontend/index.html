@@ -1,0 +1,2120 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>GOD EYE - Cybersecurity Scenario Analytics</title>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+  <style>
+    /* ── Reset & tokens ───────────────────────────────────────────────────── */
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    :root {
+      --bg0: #05070a;
+      --bg1: #0b0e13;
+      --bg2: #111620;
+      --bg3: #181e2a;
+      --bgh: #1c2333;
+      --border: #1e2638;
+      --text0: #e8ecf4;
+      --text1: #8893a8;
+      --text2: #4a5568;
+      --cyan:   #00cfff;
+      --green:  #00e87a;
+      --orange: #ff9326;
+      --red:    #ff3c5c;
+      --purple: #8b5cf6;
+      --yellow: #f5c542;
+      --cyan-dim:   rgba(0,207,255,.12);
+      --green-dim:  rgba(0,232,122,.12);
+      --orange-dim: rgba(255,147,38,.12);
+      --red-dim:    rgba(255,60,92,.12);
+      --purple-dim: rgba(139,92,246,.12);
+      --yellow-dim: rgba(245,197,66,.12);
+      --r4: 4px; --r6: 6px; --r8: 8px; --r12: 12px;
+      --mono: 'JetBrains Mono', monospace;
+      --sans: 'Inter', system-ui, sans-serif;
+    }
+    html { font-size: 14px; }
+    body {
+      font-family: var(--sans);
+      background: var(--bg0);
+      color: var(--text0);
+      min-height: 100vh;
+      overflow-x: hidden;
+    }
+    a { color: inherit; text-decoration: none; }
+    button { font-family: inherit; cursor: pointer; }
+    select, input { font-family: inherit; }
+    ::-webkit-scrollbar { width: 5px; height: 5px; }
+    ::-webkit-scrollbar-track { background: var(--bg1); }
+    ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+
+    /* ── Layout ───────────────────────────────────────────────────────────── */
+    #app { display: flex; flex-direction: column; min-height: 100vh; }
+
+    /* Header */
+    #header {
+      height: 56px;
+      background: var(--bg1);
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      padding: 0 20px;
+      gap: 24px;
+      position: sticky;
+      top: 0;
+      z-index: 200;
+    }
+    .brand {
+      display: flex; align-items: center; gap: 10px;
+      flex-shrink: 0;
+    }
+    .brand-icon {
+      width: 32px; height: 32px;
+      background: linear-gradient(135deg, var(--cyan), var(--purple));
+      border-radius: var(--r6);
+      display: flex; align-items: center; justify-content: center;
+      font-weight: 800; font-size: 13px; letter-spacing: .5px;
+      color: #fff;
+    }
+    .brand-name {
+      font-weight: 700; font-size: 15px; letter-spacing: 1.5px;
+      background: linear-gradient(90deg, var(--cyan), var(--purple));
+      -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+    }
+    .brand-sub {
+      font-size: 10px; color: var(--text2);
+      text-transform: uppercase; letter-spacing: 2px;
+    }
+    .brand-sig {
+      margin-left: auto;
+      font-size: 10px;
+      font-family: var(--mono);
+      color: var(--text2);
+      letter-spacing: .08em;
+      opacity: .6;
+      flex-shrink: 0;
+    }
+
+    /* Nav */
+    #nav {
+      display: flex; gap: 2px; overflow-x: auto;
+    }
+    .nav-btn {
+      padding: 6px 14px;
+      background: transparent;
+      border: 1px solid transparent;
+      border-radius: var(--r6);
+      color: var(--text1);
+      font-size: 12px; font-weight: 500;
+      white-space: nowrap;
+      transition: all .15s;
+    }
+    .nav-btn:hover { background: var(--bgh); color: var(--text0); }
+    .nav-btn.active {
+      background: var(--cyan-dim);
+      border-color: rgba(0,207,255,.35);
+      color: var(--cyan);
+    }
+
+    /* Header right */
+    .hdr-right {
+      margin-left: auto;
+      display: flex; align-items: center; gap: 10px;
+    }
+    .search-wrap {
+      display: flex; align-items: center; gap: 8px;
+      background: var(--bg2);
+      border: 1px solid var(--border);
+      border-radius: var(--r6);
+      padding: 5px 10px;
+      width: 240px;
+    }
+    .search-wrap input {
+      background: none; border: none; outline: none;
+      color: var(--text0); font-size: 12px; width: 100%;
+    }
+    .search-wrap input::placeholder { color: var(--text2); }
+    .status-pill {
+      display: flex; align-items: center; gap: 6px;
+      background: var(--green-dim);
+      border: 1px solid rgba(0,232,122,.3);
+      border-radius: 20px;
+      padding: 4px 10px;
+      font-size: 11px; color: var(--green);
+    }
+    .status-dot {
+      width: 6px; height: 6px;
+      background: var(--green); border-radius: 50%;
+      animation: blink 2s infinite;
+    }
+    @keyframes blink { 0%,100%{opacity:1} 50%{opacity:.3} }
+
+    /* Main body */
+    #main {
+      flex: 1;
+      padding: 20px;
+      max-width: 1920px;
+      width: 100%;
+      margin: 0 auto;
+    }
+
+    /* Section visibility */
+    .page { display: none; }
+    .page.active { display: block; }
+
+    /* ── Utility classes ─────────────────────────────────────────────────── */
+    .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 16px; }
+    .grid3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 16px; margin-bottom: 16px; }
+    .grid4 { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; margin-bottom: 16px; }
+    .grid5 { display: grid; grid-template-columns: repeat(5, 1fr); gap: 16px; margin-bottom: 16px; }
+    .mb16 { margin-bottom: 16px; }
+    .flex-gap { display: flex; gap: 8px; flex-wrap: wrap; }
+
+    /* Card */
+    .card {
+      background: var(--bg1);
+      border: 1px solid var(--border);
+      border-radius: var(--r12);
+      overflow: hidden;
+    }
+    .card-hdr {
+      padding: 12px 16px;
+      border-bottom: 1px solid var(--border);
+      display: flex; align-items: center; justify-content: space-between;
+    }
+    .card-title {
+      font-size: 12px; font-weight: 600;
+      text-transform: uppercase; letter-spacing: .8px;
+      color: var(--text1);
+    }
+    .card-body { padding: 16px; }
+    .card-body.scrollable { max-height: 440px; overflow-y: auto; padding: 0; }
+    .card-body.scrollable-tall { max-height: 600px; overflow-y: auto; padding: 0; }
+
+    /* Stat card */
+    .stat-card {
+      background: var(--bg1);
+      border: 1px solid var(--border);
+      border-radius: var(--r12);
+      padding: 16px 20px;
+      position: relative;
+      overflow: hidden;
+    }
+    .stat-card::after {
+      content: '';
+      position: absolute;
+      top: 0; left: 0; right: 0;
+      height: 2px;
+    }
+    .stat-card.cyan::after { background: var(--cyan); }
+    .stat-card.green::after { background: var(--green); }
+    .stat-card.orange::after { background: var(--orange); }
+    .stat-card.red::after { background: var(--red); }
+    .stat-card.purple::after { background: var(--purple); }
+    .stat-card.yellow::after { background: var(--yellow); }
+    .stat-label {
+      font-size: 10px; text-transform: uppercase; letter-spacing: 1px;
+      color: var(--text2); margin-bottom: 6px;
+    }
+    .stat-val {
+      font-size: 28px; font-weight: 700; line-height: 1;
+      margin-bottom: 4px;
+    }
+    .stat-sub { font-size: 11px; color: var(--text1); }
+
+    /* Badge */
+    .badge {
+      display: inline-flex; align-items: center;
+      padding: 2px 7px;
+      border-radius: var(--r4);
+      font-size: 10px; font-weight: 600;
+      font-family: var(--mono);
+      white-space: nowrap;
+    }
+    .badge-cyan   { background: var(--cyan-dim);   color: var(--cyan); }
+    .badge-green  { background: var(--green-dim);  color: var(--green); }
+    .badge-orange { background: var(--orange-dim); color: var(--orange); }
+    .badge-red    { background: var(--red-dim);    color: var(--red); }
+    .badge-purple { background: var(--purple-dim); color: var(--purple); }
+    .badge-yellow { background: var(--yellow-dim); color: var(--yellow); }
+    .badge-muted  { background: var(--bg3);        color: var(--text1); }
+
+    /* Table */
+    .dtable { width: 100%; border-collapse: collapse; }
+    .dtable th {
+      padding: 8px 12px;
+      font-size: 10px; text-transform: uppercase; letter-spacing: .8px;
+      color: var(--text2); font-weight: 600;
+      background: var(--bg2);
+      text-align: left;
+      position: sticky; top: 0; z-index: 1;
+    }
+    .dtable td {
+      padding: 8px 12px;
+      font-size: 12px; font-family: var(--mono);
+      border-bottom: 1px solid var(--border);
+      vertical-align: top;
+    }
+    .dtable tr:hover td { background: var(--bgh); }
+    .dtable tr:last-child td { border-bottom: none; }
+    .dtable .cmd-cell {
+      max-width: 500px; overflow: hidden;
+      text-overflow: ellipsis; white-space: nowrap;
+      color: var(--cyan);
+    }
+
+    /* Spinner */
+    .spin-wrap { display:flex; align-items:center; justify-content:center; padding:40px; }
+    .spinner {
+      width: 32px; height: 32px;
+      border: 2px solid var(--border);
+      border-top-color: var(--cyan);
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    /* Empty */
+    .empty { text-align: center; padding: 40px; color: var(--text2); font-size: 13px; }
+
+    /* Page title */
+    .page-title {
+      font-size: 20px; font-weight: 700; margin-bottom: 4px;
+    }
+    .page-sub { font-size: 12px; color: var(--text1); margin-bottom: 20px; }
+
+    /* ── Participant cards ────────────────────────────────────────────────── */
+    .p-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+      gap: 16px;
+      margin-bottom: 16px;
+    }
+    .p-card {
+      background: var(--bg1);
+      border: 1px solid var(--border);
+      border-radius: var(--r12);
+      padding: 18px 20px;
+      cursor: pointer;
+      transition: border-color .15s, transform .15s;
+    }
+    .p-card:hover { border-color: var(--cyan); transform: translateY(-2px); }
+    .p-card.selected { border-color: var(--cyan); background: rgba(0,207,255,.04); }
+    .p-name { font-size: 16px; font-weight: 700; color: var(--cyan); margin-bottom: 4px; }
+    .p-scenario { font-size: 11px; color: var(--text1); margin-bottom: 12px; }
+    .p-meta-row { display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 10px; }
+    .p-meta { font-size: 11px; color: var(--text2); }
+    .p-meta strong { color: var(--text0); }
+
+    /* Phase bar */
+    .phase-bar-wrap { margin-top: 10px; }
+    .phase-bar-label { font-size: 10px; color: var(--text2); margin-bottom: 4px; }
+    .phase-bar { display: flex; height: 6px; border-radius: 3px; overflow: hidden; gap: 1px; }
+    .phase-seg { height: 100%; min-width: 3px; border-radius: 1px; }
+
+    /* ── Phase timeline ───────────────────────────────────────────────────── */
+    .phase-list { display: flex; flex-direction: column; gap: 4px; }
+    .phase-row {
+      background: var(--bg2);
+      border: 1px solid var(--border);
+      border-radius: var(--r8);
+      overflow: hidden;
+    }
+    .phase-row-hdr {
+      display: flex; align-items: center; gap: 12px;
+      padding: 10px 14px;
+      cursor: pointer;
+      user-select: none;
+    }
+    .phase-row-hdr:hover { background: var(--bgh); }
+    .phase-dot {
+      width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0;
+    }
+    .phase-name { font-weight: 600; font-size: 13px; min-width: 180px; }
+    .phase-count { font-size: 12px; color: var(--text1); }
+    .phase-time { font-size: 11px; color: var(--text2); font-family: var(--mono); margin-left: auto; }
+    .phase-chevron { font-size: 10px; color: var(--text2); transition: transform .2s; }
+    .phase-row.open .phase-chevron { transform: rotate(90deg); }
+    .phase-events-wrap { display: none; padding: 0 0 8px; }
+    .phase-row.open .phase-events-wrap { display: block; }
+
+    /* Event mini row inside phase */
+    .ev-row {
+      display: flex; align-items: flex-start; gap: 10px;
+      padding: 5px 14px 5px 36px;
+      border-top: 1px solid var(--border);
+      font-size: 11px;
+      transition: background .1s;
+    }
+    .ev-row:hover { background: var(--bgh); }
+    .ev-time { font-family: var(--mono); color: var(--text2); min-width: 170px; }
+    .ev-host { color: var(--orange); min-width: 120px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .ev-user { color: var(--green); min-width: 80px; }
+    .ev-cmd  { color: var(--cyan); font-family: var(--mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 400px; flex: 1; }
+    .ev-tool { color: var(--purple); min-width: 80px; }
+    .ev-action { color: var(--text1); min-width: 120px; }
+
+    /* ── Command browser ─────────────────────────────────────────────────── */
+    .cmd-filter-bar {
+      display: flex; gap: 8px; flex-wrap: wrap;
+      margin-bottom: 12px;
+    }
+    .filter-select, .filter-input {
+      background: var(--bg2);
+      border: 1px solid var(--border);
+      border-radius: var(--r6);
+      color: var(--text0);
+      padding: 6px 10px;
+      font-size: 12px;
+    }
+    .filter-select:focus, .filter-input:focus { outline: none; border-color: var(--cyan); }
+    .btn-primary {
+      background: var(--cyan-dim);
+      border: 1px solid rgba(0,207,255,.4);
+      color: var(--cyan);
+      border-radius: var(--r6);
+      padding: 6px 14px;
+      font-size: 12px; font-weight: 600;
+      transition: background .15s;
+    }
+    .btn-primary:hover { background: rgba(0,207,255,.2); }
+
+    /* ── Behavior heatmap ────────────────────────────────────────────────── */
+    .heatmap-grid {
+      display: grid;
+      grid-template-columns: 60px repeat(24, 1fr);
+      gap: 2px;
+      font-size: 10px;
+    }
+    .heatmap-hdr { text-align: center; color: var(--text2); padding: 2px; }
+    .heatmap-label { color: var(--text1); font-size: 10px; display: flex; align-items: center; }
+    .heatmap-cell {
+      height: 22px; border-radius: 3px;
+      background: var(--bg3);
+      position: relative;
+    }
+    .heatmap-cell[title]:hover::after {
+      content: attr(title);
+      position: absolute;
+      bottom: 100%; left: 50%;
+      transform: translateX(-50%);
+      background: var(--bg3);
+      border: 1px solid var(--border);
+      color: var(--text0);
+      padding: 3px 7px;
+      border-radius: 4px;
+      font-size: 10px;
+      white-space: nowrap;
+      z-index: 100;
+      pointer-events: none;
+    }
+
+    /* ── Network flow rows ───────────────────────────────────────────────── */
+    .ip-row {
+      display: flex; justify-content: space-between; align-items: center;
+      padding: 7px 12px;
+      border-bottom: 1px solid var(--border);
+      font-size: 12px; font-family: var(--mono);
+    }
+    .ip-row:hover { background: var(--bgh); }
+    .ip-row:last-child { border-bottom: none; }
+    .ip-bar {
+      height: 4px; border-radius: 2px; background: var(--cyan);
+      margin-top: 4px;
+      transition: width .3s;
+    }
+
+    /* ── Alerts ──────────────────────────────────────────────────────────── */
+    .alert-row {
+      display: flex; align-items: flex-start; gap: 10px;
+      padding: 10px 14px;
+      border-left: 3px solid var(--red);
+      border-bottom: 1px solid var(--border);
+    }
+    .alert-row:hover { background: var(--bgh); }
+    .alert-row:last-child { border-bottom: none; }
+    .alert-sev { font-weight: 700; font-size: 10px; min-width: 36px; text-align: center; padding: 2px 4px; border-radius: 3px; }
+    .sev-high { background: rgba(255,60,60,.2); color: var(--red); border: 1px solid var(--red); }
+    .sev-med  { background: rgba(255,160,0,.15); color: #ffa500; border: 1px solid #ffa500; }
+    .sev-low  { background: rgba(120,120,120,.15); color: var(--text2); border: 1px solid var(--border); }
+    .alert-type { font-weight: 600; font-size: 12px; margin-bottom: 2px; }
+    .alert-meta { font-size: 10px; color: var(--text2); font-family: var(--mono); }
+
+    /* ── Media catalogue ─────────────────────────────────────────────────── */
+    .media-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+      gap: 12px;
+    }
+    .media-card {
+      background: var(--bg2);
+      border: 1px solid var(--border);
+      border-radius: var(--r8);
+      padding: 14px;
+      transition: border-color .15s;
+    }
+    .media-card:hover { border-color: var(--purple); }
+    .media-icon { font-size: 24px; margin-bottom: 8px; }
+    .media-type-badge { font-size: 10px; font-weight: 700; letter-spacing: .1em; padding: 4px 8px; border-radius: 4px; background: var(--purple); color: #fff; display: inline-block; margin-bottom: 8px; }
+    .media-name { font-size: 12px; font-weight: 600; margin-bottom: 4px; word-break: break-all; }
+    .media-meta { font-size: 10px; color: var(--text2); }
+
+    /* Typed text */
+    .typed-row {
+      padding: 8px 14px;
+      border-bottom: 1px solid var(--border);
+      font-size: 12px;
+    }
+    .typed-row:last-child { border-bottom: none; }
+    .typed-time { font-family: var(--mono); color: var(--text2); font-size: 10px; margin-bottom: 2px; }
+    .typed-text { color: var(--green); font-family: var(--mono); word-break: break-all; }
+
+    /* Relationships */
+    .rel-row {
+      display: flex; align-items: center; gap: 8px;
+      padding: 7px 12px; border-bottom: 1px solid var(--border);
+      font-size: 12px; font-family: var(--mono);
+    }
+    .rel-row:last-child { border-bottom: none; }
+    .rel-row:hover { background: var(--bgh); }
+    .rel-src { color: var(--cyan); min-width: 140px; }
+    .rel-arrow { color: var(--text2); }
+    .rel-dst { color: var(--orange); flex: 1; }
+    .rel-weight { color: var(--text1); font-size: 10px; }
+
+    /* Charts */
+    .chart-wrap { position: relative; height: 240px; padding: 8px; }
+    .chart-wrap-sm { position: relative; height: 180px; padding: 8px; }
+
+    /* Search results */
+    .search-result-row {
+      padding: 8px 14px; border-bottom: 1px solid var(--border);
+      font-size: 12px;
+    }
+    .search-result-row:hover { background: var(--bgh); }
+    .sr-action { font-weight: 600; margin-bottom: 2px; }
+    .sr-meta { font-family: var(--mono); font-size: 10px; color: var(--text2); }
+    .sr-cmd { color: var(--cyan); font-family: var(--mono); font-size: 11px; margin-top: 2px; word-break: break-all; }
+
+    /* User / Host detail */
+    .detail-kv { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 16px; }
+    .kv-item { background: var(--bg2); border-radius: var(--r6); padding: 10px 12px; }
+    .kv-label { font-size: 10px; color: var(--text2); text-transform: uppercase; letter-spacing: .8px; margin-bottom: 4px; }
+    .kv-val { font-family: var(--mono); font-size: 13px; font-weight: 600; }
+
+    /* Tooltip override for chart.js */
+    .chartjs-tooltip { background: var(--bg2) !important; border: 1px solid var(--border) !important; }
+
+    /* Responsive */
+    @media (max-width: 1100px) {
+      .grid4 { grid-template-columns: 1fr 1fr; }
+      .grid5 { grid-template-columns: 1fr 1fr; }
+    }
+    @media (max-width: 800px) {
+      .grid2, .grid3, .grid4, .grid5 { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+<div id="app">
+
+  <!-- ── Header ─────────────────────────────────────────────────────────── -->
+  <header id="header">
+    <div class="brand">
+      <div class="brand-icon">GE</div>
+      <div>
+        <div class="brand-name">GOD EYE</div>
+        <div class="brand-sub">Scenario Analytics</div>
+      </div>
+    </div>
+
+    <nav id="nav">
+      <button class="nav-btn active" data-page="overview">Overview</button>
+      <button class="nav-btn" data-page="participants">Participants</button>
+      <button class="nav-btn" data-page="phases">Attack Phases</button>
+      <button class="nav-btn" data-page="commands">Commands</button>
+      <button class="nav-btn" data-page="users">Users</button>
+      <button class="nav-btn" data-page="hosts">Hosts</button>
+      <button class="nav-btn" data-page="network">Network</button>
+      <button class="nav-btn" data-page="alerts">Alerts</button>
+      <button class="nav-btn" data-page="behavior">Behavior</button>
+      <button class="nav-btn" data-page="media">Media</button>
+      <button class="nav-btn" data-page="search">Search</button>
+      <button class="nav-btn" data-page="projects">Projects</button>
+    </nav>
+
+    <div class="hdr-right">
+      <a href="/timeline" style="color:var(--cyan);font-size:12px;text-decoration:none;padding:5px 10px;border:1px solid var(--border);border-radius:var(--r6);">Timeline</a>
+      <a href="/threat" style="color:var(--cyan);font-size:12px;text-decoration:none;padding:5px 10px;border:1px solid var(--border);border-radius:var(--r6);">Threat Intel</a>
+      <div class="search-wrap">
+        <svg width="13" height="13" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <circle cx="11" cy="11" r="8" stroke-width="2"/>
+          <path stroke-width="2" d="m21 21-4.35-4.35"/>
+        </svg>
+        <input type="text" id="globalSearchInput" placeholder="Quick search..." autocomplete="off">
+      </div>
+      <div class="status-pill">
+        <div class="status-dot"></div>
+        LIVE
+      </div>
+      <div class="brand-sig">hackxolotl's Lab</div>
+    </div>
+  </header>
+
+  <!-- ── Main ───────────────────────────────────────────────────────────── -->
+  <div id="main">
+
+    <!-- ════════════════ OVERVIEW ═══════════════════════════════════════ -->
+    <div class="page active" id="page-overview">
+      <div class="page-title">Overview</div>
+      <div class="page-sub">Global statistics across all participants and scenarios</div>
+
+      <div class="grid5 mb16" id="overviewStats">
+        <div class="stat-card cyan"><div class="stat-label">Total Events</div><div class="stat-val" id="ov-total">-</div><div class="stat-sub">Ingested</div></div>
+        <div class="stat-card green"><div class="stat-label">With Commands</div><div class="stat-val" id="ov-cmds">-</div><div class="stat-sub">Extracted</div></div>
+        <div class="stat-card orange"><div class="stat-label">Alerts</div><div class="stat-val" id="ov-alerts">-</div><div class="stat-sub">IDS / Suricata</div></div>
+        <div class="stat-card purple"><div class="stat-label">Typed Text</div><div class="stat-val" id="ov-typed">-</div><div class="stat-sub">UAT keylog</div></div>
+        <div class="stat-card yellow"><div class="stat-label">Time Range</div><div class="stat-val" style="font-size:14px" id="ov-range">-</div><div class="stat-sub">UTC</div></div>
+      </div>
+
+      <div class="grid2">
+        <div class="card">
+          <div class="card-hdr"><span class="card-title">Events by Phase</span></div>
+          <div class="card-body"><div class="chart-wrap"><canvas id="phaseChart"></canvas></div></div>
+        </div>
+        <div class="card">
+          <div class="card-hdr"><span class="card-title">Events by Action Category</span></div>
+          <div class="card-body"><div class="chart-wrap"><canvas id="catChart"></canvas></div></div>
+        </div>
+      </div>
+
+      <div class="grid2">
+        <div class="card">
+          <div class="card-hdr"><span class="card-title">Events by Participant</span></div>
+          <div class="card-body"><div class="chart-wrap"><canvas id="participantChart"></canvas></div></div>
+        </div>
+        <div class="card">
+          <div class="card-hdr"><span class="card-title">Events by Source Type</span></div>
+          <div class="card-body"><div class="chart-wrap"><canvas id="sourceChart"></canvas></div></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ════════════════ PARTICIPANTS ════════════════════════════════════ -->
+    <div class="page" id="page-participants">
+      <div class="page-title">Participants</div>
+      <div class="page-sub">Select a participant to explore their attack scenario in detail</div>
+
+      <div class="p-grid" id="participantGrid">
+        <div class="spin-wrap"><div class="spinner"></div></div>
+      </div>
+
+      <!-- Participant detail drilldown -->
+      <div id="participantDetail" style="display:none">
+        <div style="display:flex;align-items:center;gap:12px;margin-bottom:16px">
+          <button class="btn-primary" onclick="closeParticipantDetail()">Back to list</button>
+          <span id="pdTitle" style="font-size:18px;font-weight:700;color:var(--cyan)"></span>
+          <span id="pdScenario" class="badge badge-muted"></span>
+        </div>
+
+        <div class="grid4 mb16" id="pdStats"></div>
+
+        <div class="grid2">
+          <div class="card">
+            <div class="card-hdr"><span class="card-title">Attack Phase Distribution</span></div>
+            <div class="card-body"><div class="chart-wrap"><canvas id="pdPhaseChart"></canvas></div></div>
+          </div>
+          <div class="card">
+            <div class="card-hdr"><span class="card-title">Hourly Activity</span></div>
+            <div class="card-body"><div class="chart-wrap"><canvas id="pdHourChart"></canvas></div></div>
+          </div>
+        </div>
+
+        <div class="grid3 mb16">
+          <div class="card">
+            <div class="card-hdr"><span class="card-title">Hosts</span></div>
+            <div class="card-body scrollable" id="pdHosts"></div>
+          </div>
+          <div class="card">
+            <div class="card-hdr"><span class="card-title">Top Users</span></div>
+            <div class="card-body scrollable" id="pdUsers"></div>
+          </div>
+          <div class="card">
+            <div class="card-hdr"><span class="card-title">Top Tools</span></div>
+            <div class="card-body scrollable" id="pdTools"></div>
+          </div>
+        </div>
+
+        <!-- Phase timeline -->
+        <div class="card mb16">
+          <div class="card-hdr">
+            <span class="card-title">Phase Timeline (expandable)</span>
+          </div>
+          <div class="card-body">
+            <div class="phase-list" id="pdPhaseList">
+              <div class="spin-wrap"><div class="spinner"></div></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Typed text (UAT) -->
+        <div class="card" id="pdTypedCard" style="display:none; margin-bottom:16px">
+          <div class="card-hdr"><span class="card-title">UAT Keylog (Typed Text)</span></div>
+          <div class="card-body scrollable" id="pdTyped"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ════════════════ ATTACK PHASES ═══════════════════════════════════ -->
+    <div class="page" id="page-phases">
+      <div class="page-title">Attack Phases</div>
+      <div class="page-sub">Global phase distribution across all participants</div>
+
+      <div class="card mb16">
+        <div class="card-hdr">
+          <span class="card-title">Phase Summary</span>
+          <select id="phaseParticipantFilter" class="filter-select" style="width:180px">
+            <option value="">All Participants</option>
+          </select>
+        </div>
+        <div class="card-body">
+          <div class="phase-list" id="globalPhaseList">
+            <div class="spin-wrap"><div class="spinner"></div></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ════════════════ COMMANDS ════════════════════════════════════════ -->
+    <div class="page" id="page-commands">
+      <div class="page-title">Command Browser</div>
+      <div class="page-sub">Extracted commands from all sources — cast files, UAT logs, sensor logs</div>
+
+      <div class="cmd-filter-bar">
+        <select id="cmdParticipant" class="filter-select"><option value="">All Participants</option></select>
+        <select id="cmdPhase" class="filter-select">
+          <option value="">All Phases</option>
+          <option value="recon">recon</option>
+          <option value="initial_access">initial_access</option>
+          <option value="lateral_movement">lateral_movement</option>
+          <option value="privilege_escalation">privilege_escalation</option>
+          <option value="persistence">persistence</option>
+          <option value="discovery">discovery</option>
+          <option value="execution">execution</option>
+          <option value="command_and_control">command_and_control</option>
+          <option value="exfiltration">exfiltration</option>
+          <option value="defense_evasion">defense_evasion</option>
+          <option value="unknown">unknown</option>
+        </select>
+        <input type="text" id="cmdSearch" class="filter-input" placeholder="Search command..." style="width:220px">
+        <select id="cmdLimit" class="filter-select">
+          <option value="100">100</option>
+          <option value="200" selected>200</option>
+          <option value="500">500</option>
+          <option value="1000">1000</option>
+        </select>
+        <button class="btn-primary" onclick="loadCommands()">Apply</button>
+      </div>
+
+      <div class="grid2">
+        <div class="card mb16">
+          <div class="card-hdr"><span class="card-title">Top Commands (frequency)</span></div>
+          <div class="card-body scrollable" id="topCmdsContainer">
+            <div class="spin-wrap"><div class="spinner"></div></div>
+          </div>
+        </div>
+        <div class="card mb16">
+          <div class="card-hdr"><span class="card-title">Command Distribution by Phase</span></div>
+          <div class="card-body"><div class="chart-wrap"><canvas id="cmdPhaseChart"></canvas></div></div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-hdr"><span class="card-title" id="cmdTableTitle">Commands</span></div>
+        <div class="card-body scrollable-tall">
+          <table class="dtable" id="cmdTable">
+            <thead>
+              <tr>
+                <th>Timestamp</th>
+                <th>Participant</th>
+                <th>Host</th>
+                <th>User</th>
+                <th>Phase</th>
+                <th>Tool</th>
+                <th>Command</th>
+              </tr>
+            </thead>
+            <tbody id="cmdTbody">
+              <tr><td colspan="7"><div class="spin-wrap"><div class="spinner"></div></div></td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- ════════════════ USERS ═══════════════════════════════════════════ -->
+    <div class="page" id="page-users">
+      <div class="page-title">Users</div>
+      <div class="page-sub">All OS-level users observed across scenarios</div>
+
+      <div class="cmd-filter-bar">
+        <select id="userParticipantFilter" class="filter-select"><option value="">All Participants</option></select>
+        <button class="btn-primary" onclick="loadUsers()">Apply</button>
+      </div>
+
+      <div class="card">
+        <div class="card-hdr"><span class="card-title">User Activity</span></div>
+        <div class="card-body scrollable-tall">
+          <table class="dtable">
+            <thead>
+              <tr>
+                <th>Username</th>
+                <th>Participant</th>
+                <th>Events</th>
+                <th>Commands</th>
+                <th>Hosts</th>
+                <th>First Seen</th>
+                <th>Last Seen</th>
+              </tr>
+            </thead>
+            <tbody id="usersTbody">
+              <tr><td colspan="7"><div class="spin-wrap"><div class="spinner"></div></div></td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- ════════════════ HOSTS ═══════════════════════════════════════════ -->
+    <div class="page" id="page-hosts">
+      <div class="page-title">Hosts</div>
+      <div class="page-sub">All monitored hosts across all scenarios</div>
+
+      <div class="cmd-filter-bar">
+        <select id="hostParticipantFilter" class="filter-select"><option value="">All Participants</option></select>
+        <button class="btn-primary" onclick="loadHosts()">Apply</button>
+      </div>
+
+      <div class="card mb16">
+        <div class="card-hdr"><span class="card-title">Host List</span></div>
+        <div class="card-body scrollable-tall">
+          <table class="dtable">
+            <thead>
+              <tr>
+                <th>Host</th>
+                <th>Participant</th>
+                <th>Scenario</th>
+                <th>Events</th>
+                <th>Users</th>
+                <th>Alerts</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody id="hostsTbody">
+              <tr><td colspan="7"><div class="spin-wrap"><div class="spinner"></div></div></td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <div id="hostDetail" style="display:none">
+        <div style="display:flex;align-items:center;gap:12px;margin-bottom:16px">
+          <button class="btn-primary" onclick="closeHostDetail()">Back</button>
+          <span id="hdTitle" style="font-size:16px;font-weight:700;color:var(--orange)"></span>
+        </div>
+        <div class="grid3">
+          <div class="card">
+            <div class="card-hdr"><span class="card-title">Phase Distribution</span></div>
+            <div class="card-body scrollable" id="hdPhases"></div>
+          </div>
+          <div class="card">
+            <div class="card-hdr"><span class="card-title">Users on Host</span></div>
+            <div class="card-body scrollable" id="hdUsers"></div>
+          </div>
+          <div class="card">
+            <div class="card-hdr"><span class="card-title">Tools Seen</span></div>
+            <div class="card-body scrollable" id="hdTools"></div>
+          </div>
+        </div>
+        <div class="card mt16" style="margin-top:12px">
+          <div class="card-hdr"><span class="card-title">Host Timeline (500 events)</span></div>
+          <div class="card-body scrollable-tall">
+            <table class="dtable">
+              <thead>
+                <tr><th>Time</th><th>User</th><th>Action</th><th>Tool</th><th>Command</th><th>Phase</th></tr>
+              </thead>
+              <tbody id="hdTimeline"></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ════════════════ NETWORK ═════════════════════════════════════════ -->
+    <div class="page" id="page-network">
+      <div class="page-title">Network Activity</div>
+      <div class="page-sub">IP flows, protocols, and connection patterns</div>
+
+      <div class="cmd-filter-bar">
+        <select id="netParticipantFilter" class="filter-select"><option value="">All Participants</option></select>
+        <button class="btn-primary" onclick="loadNetwork()">Apply</button>
+      </div>
+
+      <div class="grid2 mb16">
+        <div class="card">
+          <div class="card-hdr"><span class="card-title">Source IPs (Top 30)</span></div>
+          <div class="card-body scrollable" id="srcIpList"></div>
+        </div>
+        <div class="card">
+          <div class="card-hdr"><span class="card-title">Destination IPs (Top 30)</span></div>
+          <div class="card-body scrollable" id="dstIpList"></div>
+        </div>
+      </div>
+
+      <div class="grid2">
+        <div class="card">
+          <div class="card-hdr"><span class="card-title">Protocol Distribution</span></div>
+          <div class="card-body"><div class="chart-wrap"><canvas id="protoChart"></canvas></div></div>
+        </div>
+        <div class="card">
+          <div class="card-hdr"><span class="card-title">Top Connections (src → dst)</span></div>
+          <div class="card-body scrollable" id="topConnList"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ════════════════ ALERTS ══════════════════════════════════════════ -->
+    <div class="page" id="page-alerts">
+      <div class="page-title">Security Alerts</div>
+      <div class="page-sub">Suricata IDS detections and anomaly signals</div>
+
+      <div class="cmd-filter-bar">
+        <select id="alertParticipantFilter" class="filter-select"><option value="">All Participants</option></select>
+        <button class="btn-primary" onclick="loadAlerts()">Apply</button>
+      </div>
+
+      <div class="grid4 mb16" id="alertStats">
+        <div class="stat-card red"><div class="stat-label">Total Alerts</div><div class="stat-val" id="al-total">-</div></div>
+        <div class="stat-card orange"><div class="stat-label">High</div><div class="stat-val" id="al-high">-</div></div>
+        <div class="stat-card yellow"><div class="stat-label">Medium</div><div class="stat-val" id="al-med">-</div></div>
+        <div class="stat-card muted"><div class="stat-label" style="color:var(--text2)">Low</div><div class="stat-val" id="al-low">-</div></div>
+      </div>
+
+      <div class="card">
+        <div class="card-hdr"><span class="card-title">Alerts</span></div>
+        <div class="card-body scrollable-tall" id="alertsContainer">
+          <div class="spin-wrap"><div class="spinner"></div></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ════════════════ BEHAVIOR ════════════════════════════════════════ -->
+    <div class="page" id="page-behavior">
+      <div class="page-title">Behavior Analysis</div>
+      <div class="page-sub">Heatmaps, tool usage patterns, and phase progression per participant</div>
+
+      <div class="cmd-filter-bar">
+        <select id="behaviorParticipant" class="filter-select"><option value="">Select Participant</option></select>
+        <button class="btn-primary" onclick="loadBehavior()">Load</button>
+      </div>
+
+      <div id="behaviorContent" style="display:none">
+        <!-- Hourly heatmap -->
+        <div class="card mb16">
+          <div class="card-hdr"><span class="card-title">Hourly Activity Heatmap (by phase)</span></div>
+          <div class="card-body">
+            <div id="heatmapContainer" style="overflow-x:auto"></div>
+          </div>
+        </div>
+
+        <div class="grid2">
+          <div class="card">
+            <div class="card-hdr"><span class="card-title">Tool Usage by Phase</span></div>
+            <div class="card-body scrollable" id="behavToolList"></div>
+          </div>
+          <div class="card">
+            <div class="card-hdr"><span class="card-title">User Activity by Category</span></div>
+            <div class="card-body scrollable" id="behavUserList"></div>
+          </div>
+        </div>
+
+        <div class="card" style="margin-top:16px">
+          <div class="card-hdr"><span class="card-title">Phase Sequence Timeline</span></div>
+          <div class="card-body">
+            <div class="chart-wrap" style="height:120px"><canvas id="phaseSeqChart"></canvas></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ════════════════ MEDIA ═══════════════════════════════════════════ -->
+    <div class="page" id="page-media">
+      <div class="page-title">Media Catalogue</div>
+      <div class="page-sub">Video recordings, terminal cast files, and network captures</div>
+
+      <div class="cmd-filter-bar">
+        <select id="mediaParticipantFilter" class="filter-select"><option value="">All Participants</option></select>
+        <button class="btn-primary" onclick="loadMedia()">Apply</button>
+      </div>
+
+      <div class="media-grid" id="mediaGrid">
+        <div class="spin-wrap"><div class="spinner"></div></div>
+      </div>
+    </div>
+
+    <!-- ════════════════ SEARCH ══════════════════════════════════════════ -->
+    <div class="page" id="page-search">
+      <div class="page-title">Search</div>
+      <div class="page-sub">Full-text search across commands, actions, tools, users</div>
+
+      <div class="cmd-filter-bar">
+        <input type="text" id="searchQuery" class="filter-input" placeholder="Enter search term..." style="width:340px">
+        <select id="searchParticipant" class="filter-select"><option value="">All Participants</option></select>
+        <button class="btn-primary" onclick="runSearch()">Search</button>
+      </div>
+
+      <div class="card">
+        <div class="card-hdr"><span class="card-title" id="searchResultTitle">Results</span></div>
+        <div class="card-body scrollable-tall" id="searchResultsContainer">
+          <div class="empty">Enter a search term above</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ═══ PROJECTS ════════════════════════════════════════════════════════ -->
+    <div class="page" id="page-projects">
+      <div class="two-col-layout" style="display:grid;grid-template-columns:340px 1fr;gap:20px;height:100%;">
+
+        <!-- Left: active-DB tree -->
+        <div style="display:flex;flex-direction:column;gap:16px;overflow:hidden;">
+          <div class="card" style="flex:1;overflow:hidden;display:flex;flex-direction:column;">
+            <div class="card-hdr">
+              <span class="card-title">Active Dataset Tree</span>
+              <button class="btn-sm" onclick="loadActiveTree()">Refresh</button>
+            </div>
+            <div class="card-body scrollable-tall" id="activeTreeContainer" style="flex:1;overflow-y:auto;">
+              <div class="empty">Loading...</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Right: project list + create form -->
+        <div style="display:flex;flex-direction:column;gap:16px;overflow:hidden;">
+
+          <!-- Create form -->
+          <div class="card">
+            <div class="card-hdr"><span class="card-title">Create Project</span></div>
+            <div class="card-body">
+              <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-bottom:12px;">
+                <label style="font-size:11px;color:#8893a8;text-transform:uppercase;letter-spacing:.05em;">Type</label>
+                <label style="display:flex;align-items:center;gap:6px;cursor:pointer;">
+                  <input type="radio" name="projType" value="filter" checked onchange="toggleProjType()"> Filter
+                </label>
+                <label style="display:flex;align-items:center;gap:6px;cursor:pointer;">
+                  <input type="radio" name="projType" value="dataset" onchange="toggleProjType()"> Dataset
+                </label>
+              </div>
+
+              <div style="display:grid;gap:10px;">
+                <input type="text" id="projName" class="filter-input" placeholder="Project name" style="width:100%;box-sizing:border-box;">
+                <input type="text" id="projDesc" class="filter-input" placeholder="Description (optional)" style="width:100%;box-sizing:border-box;">
+
+                <!-- Filter options -->
+                <div id="projFilterOptions" style="display:grid;gap:8px;">
+                  <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
+                    <div>
+                      <label class="filter-label">Participants</label>
+                      <select id="projParticipants" class="filter-select" multiple size="4" style="width:100%;box-sizing:border-box;"></select>
+                    </div>
+                    <div>
+                      <label class="filter-label">Attack Phases</label>
+                      <select id="projPhases" class="filter-select" multiple size="4" style="width:100%;box-sizing:border-box;">
+                        <option value="reconnaissance">Reconnaissance</option>
+                        <option value="initial_access">Initial Access</option>
+                        <option value="execution">Execution</option>
+                        <option value="persistence">Persistence</option>
+                        <option value="privilege_escalation">Privilege Escalation</option>
+                        <option value="defense_evasion">Defense Evasion</option>
+                        <option value="credential_access">Credential Access</option>
+                        <option value="discovery">Discovery</option>
+                        <option value="lateral_movement">Lateral Movement</option>
+                        <option value="collection">Collection</option>
+                        <option value="command_and_control">C2</option>
+                        <option value="exfiltration">Exfiltration</option>
+                        <option value="impact">Impact</option>
+                        <option value="unknown">Unknown</option>
+                      </select>
+                    </div>
+                  </div>
+                  <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
+                    <div>
+                      <label class="filter-label">Date From</label>
+                      <input type="date" id="projDateFrom" class="filter-input" style="width:100%;box-sizing:border-box;">
+                    </div>
+                    <div>
+                      <label class="filter-label">Date To</label>
+                      <input type="date" id="projDateTo" class="filter-input" style="width:100%;box-sizing:border-box;">
+                    </div>
+                  </div>
+                  <div>
+                    <label class="filter-label">Source Types (hold Ctrl/Cmd to multi-select)</label>
+                    <select id="projSourceTypes" class="filter-select" multiple size="3" style="width:100%;box-sizing:border-box;">
+                      <option value="bash_history">bash_history</option>
+                      <option value="suricata">suricata</option>
+                      <option value="zeek">zeek</option>
+                      <option value="hacktools">hacktools</option>
+                      <option value="apt">apt</option>
+                      <option value="cast">cast</option>
+                      <option value="keylogger">keylogger</option>
+                    </select>
+                  </div>
+                </div>
+
+                <!-- Dataset options -->
+                <div id="projDatasetOptions" style="display:none;">
+                  <label class="filter-label">Data Directory Path</label>
+                  <input type="text" id="projDataPath" class="filter-input" placeholder="/path/to/data" style="width:100%;box-sizing:border-box;">
+                </div>
+
+                <button class="btn-primary" onclick="createProject()" style="width:100%;">Create Project</button>
+              </div>
+            </div>
+          </div>
+
+          <!-- Project list -->
+          <div class="card" style="flex:1;overflow:hidden;display:flex;flex-direction:column;">
+            <div class="card-hdr">
+              <span class="card-title">Projects</span>
+              <button class="btn-sm" onclick="loadProjects()">Refresh</button>
+            </div>
+            <div class="card-body scrollable-tall" id="projectListContainer" style="flex:1;overflow-y:auto;">
+              <div class="empty">Loading...</div>
+            </div>
+          </div>
+
+        </div>
+      </div>
+    </div>
+
+  </div><!-- #main -->
+</div><!-- #app -->
+
+<script>
+// ─── Config ────────────────────────────────────────────────────────────────
+const API = '';
+let _charts = {};
+let _participants = [];
+
+// ─── Chart.js defaults ─────────────────────────────────────────────────────
+Chart.defaults.color = '#8893a8';
+Chart.defaults.borderColor = '#1e2638';
+Chart.defaults.font.family = "'JetBrains Mono', monospace";
+Chart.defaults.font.size = 11;
+
+const COLORS = ['#00cfff','#00e87a','#ff9326','#8b5cf6','#ff3c5c','#f5c542','#ec4899','#38bdf8','#a3e635','#fb923c'];
+
+function mkChart(id, type, labels, datasets, opts={}) {
+  if (_charts[id]) _charts[id].destroy();
+  const ctx = document.getElementById(id);
+  if (!ctx) return;
+  _charts[id] = new Chart(ctx, {
+    type,
+    data: { labels, datasets },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      plugins: {
+        legend: { labels: { color: '#8893a8', boxWidth: 10, padding: 8, font: { size: 10 } } },
+        tooltip: { backgroundColor: '#111620', borderColor: '#1e2638', borderWidth: 1 }
+      },
+      scales: type === 'bar' || type === 'line' ? {
+        x: { grid: { color: '#1e2638' }, ticks: { color: '#4a5568' } },
+        y: { grid: { color: '#1e2638' }, ticks: { color: '#4a5568' } }
+      } : undefined,
+      ...opts
+    }
+  });
+}
+
+// ─── Fetch helper ──────────────────────────────────────────────────────────
+async function api(path) {
+  const r = await fetch(API + path);
+  if (!r.ok) throw new Error(`${r.status} ${path}`);
+  return r.json();
+}
+
+// ─── Phase metadata ────────────────────────────────────────────────────────
+const PHASES = {
+  recon:                 { color: '#38bdf8', label: 'Recon' },
+  initial_access:        { color: '#00cfff', label: 'Initial Access' },
+  lateral_movement:      { color: '#a3e635', label: 'Lateral Movement' },
+  privilege_escalation:  { color: '#f5c542', label: 'Priv. Escalation' },
+  persistence:           { color: '#ff9326', label: 'Persistence' },
+  discovery:             { color: '#8b5cf6', label: 'Discovery' },
+  execution:             { color: '#ec4899', label: 'Execution' },
+  command_and_control:   { color: '#ff3c5c', label: 'C2' },
+  exfiltration:          { color: '#fb923c', label: 'Exfiltration' },
+  defense_evasion:       { color: '#00e87a', label: 'Defense Evasion' },
+  unknown:               { color: '#4a5568', label: 'Unknown' },
+};
+
+function phaseColor(ph) { return (PHASES[ph] || PHASES.unknown).color; }
+function phaseLabel(ph) { return (PHASES[ph] || { label: ph || 'unknown' }).label; }
+function phaseBadge(ph) {
+  const c = phaseColor(ph);
+  return `<span style="display:inline-block;padding:2px 6px;border-radius:3px;font-size:10px;font-weight:600;font-family:var(--mono);background:${c}22;color:${c}">${phaseLabel(ph)}</span>`;
+}
+
+function severityBadge(s) {
+  const map = { high:'red', medium:'orange', low:'yellow', critical:'red', info:'cyan' };
+  const cls = 'badge-' + (map[(s||'').toLowerCase()] || 'muted');
+  return `<span class="badge ${cls}">${s||'?'}</span>`;
+}
+
+function tsShort(ts) {
+  if (!ts) return '-';
+  return ts.replace('T', ' ').substring(0, 19);
+}
+function tsDate(ts) { return ts ? ts.substring(0,10) : '-'; }
+
+// ─── Navigation ────────────────────────────────────────────────────────────
+document.querySelectorAll('.nav-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('.nav-btn').forEach(b => b.classList.remove('active'));
+    document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+    btn.classList.add('active');
+    const pageId = 'page-' + btn.dataset.page;
+    document.getElementById(pageId).classList.add('active');
+    onPageActivate(btn.dataset.page);
+  });
+});
+
+document.getElementById('globalSearchInput').addEventListener('keydown', e => {
+  if (e.key === 'Enter') {
+    const q = e.target.value.trim();
+    if (!q) return;
+    document.getElementById('searchQuery').value = q;
+    document.querySelectorAll('.nav-btn').forEach(b => b.classList.remove('active'));
+    document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+    document.querySelector('[data-page="search"]').classList.add('active');
+    document.getElementById('page-search').classList.add('active');
+    runSearch();
+  }
+});
+
+const _loaded = new Set();
+function onPageActivate(page) {
+  if (page === 'overview' && !_loaded.has('overview')) { loadOverview(); _loaded.add('overview'); }
+  if (page === 'participants' && !_loaded.has('participants')) { loadParticipantGrid(); _loaded.add('participants'); }
+  if (page === 'phases') { loadGlobalPhases(); }
+  if (page === 'commands' && !_loaded.has('commands')) { loadCommands(); loadTopCommands(); _loaded.add('commands'); }
+  if (page === 'users' && !_loaded.has('users')) { loadUsers(); _loaded.add('users'); }
+  if (page === 'hosts' && !_loaded.has('hosts')) { loadHosts(); _loaded.add('hosts'); }
+  if (page === 'network' && !_loaded.has('network')) { loadNetwork(); _loaded.add('network'); }
+  if (page === 'alerts' && !_loaded.has('alerts')) { loadAlerts(); _loaded.add('alerts'); }
+  if (page === 'media' && !_loaded.has('media')) { loadMedia(); _loaded.add('media'); }
+  if (page === 'behavior') {
+    const pid = document.getElementById('behaviorParticipant').value;
+    if (pid) loadBehavior();
+  }
+  if (page === 'projects') { loadProjects(); loadActiveTree(); }
+}
+
+// ─── Populate participant selects ──────────────────────────────────────────
+function populateParticipantSelects(participants) {
+  const selects = ['cmdParticipant','userParticipantFilter','hostParticipantFilter',
+                   'netParticipantFilter','alertParticipantFilter','behaviorParticipant',
+                   'mediaParticipantFilter','searchParticipant','phaseParticipantFilter'];
+  // also populate the project participant multi-select (different pattern: no default "All" option)
+  const projSel = document.getElementById('projParticipants');
+  if (projSel) {
+    projSel.innerHTML = '';
+    participants.forEach(p => {
+      const o = document.createElement('option');
+      o.value = p.participant_id;
+      o.textContent = `${p.participant_id} (${p.scenario_name||'?'})`;
+      projSel.appendChild(o);
+    });
+  }
+  selects.forEach(id => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    // keep first option
+    while (el.options.length > 1) el.remove(1);
+    participants.forEach(p => {
+      const o = document.createElement('option');
+      o.value = p.participant_id;
+      o.textContent = `${p.participant_id} (${p.scenario_name||'?'})`;
+      el.appendChild(o);
+    });
+  });
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// OVERVIEW
+// ═══════════════════════════════════════════════════════════════════════════
+async function loadOverview() {
+  const stats = await api('/api/stats');
+
+  document.getElementById('ov-total').textContent  = (stats.total_events||0).toLocaleString();
+  document.getElementById('ov-cmds').textContent   = (stats.with_commands||0).toLocaleString();
+  document.getElementById('ov-alerts').textContent = (stats.with_alerts||0).toLocaleString();
+  document.getElementById('ov-typed').textContent  = (stats.with_typed_text||0).toLocaleString();
+  const tr = stats.time_range || {};
+  document.getElementById('ov-range').textContent  = tr.t0 ? `${tsDate(tr.t0)} → ${tsDate(tr.t1)}` : '-';
+
+  // Phase chart
+  const phases = stats.by_phase || [];
+  mkChart('phaseChart', 'bar',
+    phases.map(p => phaseLabel(p.attack_phase)),
+    [{ data: phases.map(p => p.n), backgroundColor: phases.map(p => phaseColor(p.attack_phase)), borderRadius: 4 }],
+    { plugins: { legend: { display: false } } }
+  );
+
+  // Category chart
+  const cats = stats.by_action_category || [];
+  mkChart('catChart', 'doughnut',
+    cats.map(c => c.action_category || 'unknown'),
+    [{ data: cats.map(c => c.n), backgroundColor: COLORS, borderWidth: 0 }]
+  );
+
+  // Participant chart
+  const parts = stats.by_participant || [];
+  _participants = parts;
+  mkChart('participantChart', 'bar',
+    parts.map(p => p.participant_id),
+    [{ data: parts.map(p => p.n), backgroundColor: COLORS, borderRadius: 4 }],
+    { plugins: { legend: { display: false } } }
+  );
+
+  // Source type chart
+  const srcs = stats.by_source_type || [];
+  mkChart('sourceChart', 'doughnut',
+    srcs.map(s => s.source_type || 'unknown'),
+    [{ data: srcs.map(s => s.n), backgroundColor: COLORS, borderWidth: 0 }]
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// PARTICIPANTS
+// ═══════════════════════════════════════════════════════════════════════════
+async function loadParticipantGrid() {
+  const data = await api('/api/participants');
+  const ps = data.participants || [];
+  _participants = ps;
+  populateParticipantSelects(ps);
+
+  const grid = document.getElementById('participantGrid');
+  if (!ps.length) { grid.innerHTML = '<div class="empty">No participants found</div>'; return; }
+
+  const totalAll = ps.reduce((s,p) => s + (p.total_events||0), 0);
+
+  grid.innerHTML = ps.map(p => {
+    const phases = p.phases || {};
+    const phTotal = Object.values(phases).reduce((s,n) => s + n, 0) || 1;
+    const phOrder = ['recon','initial_access','lateral_movement','privilege_escalation',
+                     'persistence','discovery','execution','command_and_control',
+                     'exfiltration','defense_evasion','unknown'];
+    const segs = phOrder.map(ph => {
+      const n = phases[ph] || 0;
+      if (!n) return '';
+      const pct = Math.max(2, Math.round(n/phTotal*100));
+      return `<div class="phase-seg" style="width:${pct}%;background:${phaseColor(ph)}" title="${phaseLabel(ph)}: ${n.toLocaleString()}"></div>`;
+    }).join('');
+
+    return `
+      <div class="p-card" onclick="openParticipant('${p.participant_id}')">
+        <div class="p-name">${p.participant_id}</div>
+        <div class="p-scenario">${p.scenario_name || 'unknown scenario'}</div>
+        <div class="p-meta-row">
+          <span class="p-meta"><strong>${(p.total_events||0).toLocaleString()}</strong> events</span>
+          <span class="p-meta"><strong>${p.unique_hosts||0}</strong> hosts</span>
+          <span class="p-meta"><strong>${p.unique_users||0}</strong> users</span>
+          <span class="p-meta"><strong>${p.command_count||0}</strong> commands</span>
+          ${p.typed_text_count ? `<span class="p-meta"><strong>${p.typed_text_count}</strong> keylog</span>` : ''}
+        </div>
+        <div class="phase-bar-wrap">
+          <div class="phase-bar-label">Phase coverage</div>
+          <div class="phase-bar">${segs}</div>
+        </div>
+      </div>`;
+  }).join('');
+}
+
+async function openParticipant(pid) {
+  document.getElementById('participantGrid').style.display = 'none';
+  const det = document.getElementById('participantDetail');
+  det.style.display = 'block';
+  document.getElementById('pdTitle').textContent = pid;
+
+  // Fetch detail and phases in parallel
+  const [detail, phaseData] = await Promise.all([
+    api(`/api/participants/${pid}`),
+    api(`/api/participants/${pid}/phases`)
+  ]);
+
+  document.getElementById('pdScenario').textContent = detail.scenario_name || '?';
+
+  // Stats row
+  document.getElementById('pdStats').innerHTML = `
+    <div class="stat-card cyan"><div class="stat-label">Events</div><div class="stat-val">${(detail.total_events||0).toLocaleString()}</div></div>
+    <div class="stat-card green"><div class="stat-label">Commands</div><div class="stat-val">${(detail.command_count||0).toLocaleString()}</div></div>
+    <div class="stat-card orange"><div class="stat-label">Hosts</div><div class="stat-val">${detail.unique_hosts||0}</div></div>
+    <div class="stat-card purple"><div class="stat-label">Users</div><div class="stat-val">${detail.unique_users||0}</div></div>
+  `;
+
+  // Phase chart
+  const phaseSummary = {};
+  (phaseData.phases||[]).forEach(ph => { phaseSummary[ph.phase] = ph.count; });
+  const phKeys = Object.keys(phaseSummary);
+  mkChart('pdPhaseChart', 'bar',
+    phKeys.map(phaseLabel),
+    [{ data: phKeys.map(k => phaseSummary[k]), backgroundColor: phKeys.map(phaseColor), borderRadius: 4 }],
+    { plugins: { legend: { display: false } } }
+  );
+
+  // Hourly chart
+  const hourly = detail.hourly_activity || [];
+  const hLabels = Array.from({length:24}, (_,i) => String(i).padStart(2,'0'));
+  const hData = hLabels.map(h => (hourly.find(x => x.hour === parseInt(h)) || {n:0}).n);
+  mkChart('pdHourChart', 'bar',
+    hLabels,
+    [{ data: hData, backgroundColor: 'rgba(0,207,255,.5)', borderRadius: 3 }],
+    { plugins: { legend: { display: false } } }
+  );
+
+  // Hosts list
+  document.getElementById('pdHosts').innerHTML = renderSimpleTable(detail.hosts||[], ['source_host','n'], ['Host','Events']);
+
+  // Users list
+  document.getElementById('pdUsers').innerHTML = renderSimpleTable(detail.users||[], ['user','n'], ['User','Events']);
+
+  // Tools list
+  document.getElementById('pdTools').innerHTML = renderSimpleTable(detail.top_tools||[], ['tool','n'], ['Tool','Events']);
+
+  // Phase timeline
+  renderPhaseList(phaseData.phases||[], 'pdPhaseList');
+
+  // Typed text
+  if ((detail.typed_text_count||0) > 0) {
+    document.getElementById('pdTypedCard').style.display = 'block';
+    const typedData = await api(`/api/participants/${pid}/typed`);
+    const rows = typedData.typed_text || [];
+    document.getElementById('pdTyped').innerHTML = rows.length
+      ? rows.map(r => `
+        <div class="typed-row">
+          <div class="typed-time">${tsShort(r.timestamp_utc)} | ${r.source_host||'-'} | ${phaseBadge(r.attack_phase)}</div>
+          <div class="typed-text">${escHtml(r.typed_text)}</div>
+        </div>`).join('')
+      : '<div class="empty">No typed text</div>';
+  }
+}
+
+function closeParticipantDetail() {
+  document.getElementById('participantDetail').style.display = 'none';
+  document.getElementById('participantGrid').style.display = 'grid';
+  document.getElementById('pdTypedCard').style.display = 'none';
+}
+
+function renderSimpleTable(rows, keys, headers) {
+  if (!rows.length) return '<div class="empty">No data</div>';
+  return `<table class="dtable"><thead><tr>${headers.map(h=>`<th>${h}</th>`).join('')}</tr></thead><tbody>
+    ${rows.map(r => `<tr>${keys.map(k => `<td>${escHtml(String(r[k]??'-'))}</td>`).join('')}</tr>`).join('')}
+  </tbody></table>`;
+}
+
+function renderPhaseList(phases, containerId) {
+  const el = document.getElementById(containerId);
+  if (!phases.length) { el.innerHTML = '<div class="empty">No phase data</div>'; return; }
+
+  el.innerHTML = phases.map(ph => {
+    const evRows = (ph.events||[]).slice(0,200).map(ev => `
+      <div class="ev-row">
+        <span class="ev-time">${tsShort(ev.timestamp_utc)}</span>
+        <span class="ev-host">${escHtml(ev.source_host||'-')}</span>
+        <span class="ev-user">${escHtml(ev.user||'-')}</span>
+        <span class="ev-tool">${escHtml(ev.tool||'-')}</span>
+        <span class="ev-action">${escHtml(ev.action_name||'-')}</span>
+        <span class="ev-cmd">${escHtml(ev.command||ev.typed_text||'')}</span>
+      </div>`).join('');
+
+    return `
+      <div class="phase-row" id="pr-${containerId}-${ph.phase}">
+        <div class="phase-row-hdr" onclick="togglePhase('pr-${containerId}-${ph.phase}')">
+          <div class="phase-dot" style="background:${phaseColor(ph.phase)}"></div>
+          <div class="phase-name">${phaseLabel(ph.phase)}</div>
+          <div class="phase-count">${ph.count.toLocaleString()} events</div>
+          <div class="phase-time">${tsShort(ph.first_seen)} → ${tsShort(ph.last_seen)}</div>
+          <div class="phase-chevron">&#9658;</div>
+        </div>
+        <div class="phase-events-wrap">
+          <div style="padding:6px 14px;font-size:10px;color:var(--text2)">Showing up to 200 events</div>
+          ${evRows}
+        </div>
+      </div>`;
+  }).join('');
+}
+
+function togglePhase(id) {
+  const el = document.getElementById(id);
+  el.classList.toggle('open');
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// GLOBAL PHASES
+// ═══════════════════════════════════════════════════════════════════════════
+async function loadGlobalPhases() {
+  const pid = document.getElementById('phaseParticipantFilter').value;
+
+  if (pid) {
+    // Load participant phases directly
+    const data = await api(`/api/participants/${pid}/phases`);
+    renderPhaseList(data.phases||[], 'globalPhaseList');
+  } else {
+    const data = await api('/api/phases');
+    const phases = data.phases || [];
+    const el = document.getElementById('globalPhaseList');
+    el.innerHTML = phases.map(ph => {
+      const byP = ph.by_participant || {};
+      const parts = Object.entries(byP).map(([k,v]) =>
+        `<span class="badge badge-muted" style="margin:2px">${k}: ${v.toLocaleString()}</span>`
+      ).join(' ');
+      return `
+        <div class="phase-row">
+          <div class="phase-row-hdr">
+            <div class="phase-dot" style="background:${phaseColor(ph.phase)}"></div>
+            <div class="phase-name">${phaseLabel(ph.phase)}</div>
+            <div class="phase-count">${(ph.total||0).toLocaleString()} events</div>
+            <div style="margin-left:16px;flex:1">${parts}</div>
+          </div>
+        </div>`;
+    }).join('');
+  }
+}
+
+document.getElementById('phaseParticipantFilter').addEventListener('change', loadGlobalPhases);
+
+// ═══════════════════════════════════════════════════════════════════════════
+// COMMANDS
+// ═══════════════════════════════════════════════════════════════════════════
+async function loadTopCommands() {
+  const pid = document.getElementById('cmdParticipant').value;
+  const url = '/api/commands/top' + (pid ? `?participant_id=${pid}` : '');
+  const data = await api(url);
+  const rows = data.top_commands || [];
+
+  const el = document.getElementById('topCmdsContainer');
+  if (!rows.length) { el.innerHTML = '<div class="empty">No commands</div>'; return; }
+  const max = rows[0].n || 1;
+
+  el.innerHTML = rows.map(r => `
+    <div style="padding:7px 12px;border-bottom:1px solid var(--border)">
+      <div style="display:flex;justify-content:space-between;margin-bottom:3px">
+        <span style="font-family:var(--mono);font-size:11px;color:var(--cyan);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:75%">${escHtml(r.command)}</span>
+        <span class="badge badge-cyan">${r.n}</span>
+      </div>
+      <div style="height:3px;border-radius:2px;background:var(--border)">
+        <div style="height:3px;border-radius:2px;background:var(--cyan);width:${Math.round(r.n/max*100)}%"></div>
+      </div>
+      ${phaseBadge(r.attack_phase)}
+    </div>`).join('');
+
+  // Phase pie from top commands
+  const phCount = {};
+  rows.forEach(r => { phCount[r.attack_phase||'unknown'] = (phCount[r.attack_phase||'unknown']||0) + r.n; });
+  const phK = Object.keys(phCount);
+  mkChart('cmdPhaseChart', 'doughnut',
+    phK.map(phaseLabel),
+    [{ data: phK.map(k => phCount[k]), backgroundColor: phK.map(phaseColor), borderWidth: 0 }]
+  );
+}
+
+async function loadCommands() {
+  const pid = document.getElementById('cmdParticipant').value;
+  const phase = document.getElementById('cmdPhase').value;
+  const q = document.getElementById('cmdSearch').value.trim();
+  const limit = document.getElementById('cmdLimit').value;
+
+  let url = `/api/commands?limit=${limit}`;
+  if (pid) url += `&participant_id=${pid}`;
+  if (phase) url += `&phase=${phase}`;
+  if (q) url += `&q=${encodeURIComponent(q)}`;
+
+  const tbody = document.getElementById('cmdTbody');
+  tbody.innerHTML = '<tr><td colspan="7"><div class="spin-wrap"><div class="spinner"></div></div></td></tr>';
+
+  const data = await api(url);
+  const rows = data.commands || [];
+  document.getElementById('cmdTableTitle').textContent = `Commands (${rows.length.toLocaleString()})`;
+
+  if (!rows.length) { tbody.innerHTML = '<tr><td colspan="7"><div class="empty">No commands found</div></td></tr>'; return; }
+  tbody.innerHTML = rows.map(r => `
+    <tr>
+      <td style="white-space:nowrap">${tsShort(r.timestamp_utc)}</td>
+      <td>${escHtml(r.participant_id||'-')}</td>
+      <td style="color:var(--orange)">${escHtml(r.source_host||'-')}</td>
+      <td style="color:var(--green)">${escHtml(r.user||'-')}</td>
+      <td>${phaseBadge(r.attack_phase)}</td>
+      <td style="color:var(--purple)">${escHtml(r.tool||'-')}</td>
+      <td class="cmd-cell" title="${escAttr(r.command)}">${escHtml(r.command||'')}</td>
+    </tr>`).join('');
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// USERS
+// ═══════════════════════════════════════════════════════════════════════════
+async function loadUsers() {
+  const pid = document.getElementById('userParticipantFilter').value;
+  let url = '/api/users';
+  if (pid) url += `?participant_id=${pid}`;
+
+  const data = await api(url);
+  const rows = data.users || [];
+  const tbody = document.getElementById('usersTbody');
+
+  if (!rows.length) { tbody.innerHTML = '<tr><td colspan="7"><div class="empty">No users</div></td></tr>'; return; }
+  tbody.innerHTML = rows.map(r => `
+    <tr>
+      <td style="color:var(--green);font-weight:600">${escHtml(r.user)}</td>
+      <td>${escHtml(r.participant_id||'-')}</td>
+      <td>${(r.event_count||0).toLocaleString()}</td>
+      <td>${(r.command_count||0).toLocaleString()}</td>
+      <td>${r.host_count||0}</td>
+      <td>${tsShort(r.first_seen)}</td>
+      <td>${tsShort(r.last_seen)}</td>
+    </tr>`).join('');
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// HOSTS
+// ═══════════════════════════════════════════════════════════════════════════
+async function loadHosts() {
+  const pid = document.getElementById('hostParticipantFilter').value;
+  let url = '/api/hosts';
+  if (pid) url += `?participant_id=${pid}`;
+
+  const data = await api(url);
+  const rows = data.hosts || [];
+  const tbody = document.getElementById('hostsTbody');
+
+  if (!rows.length) { tbody.innerHTML = '<tr><td colspan="7"><div class="empty">No hosts</div></td></tr>'; return; }
+  tbody.innerHTML = rows.map(r => `
+    <tr>
+      <td style="color:var(--orange);font-weight:600">${escHtml(r.source_host)}</td>
+      <td>${escHtml(r.participant_id||'-')}</td>
+      <td>${escHtml(r.scenario_name||'-')}</td>
+      <td>${(r.event_count||0).toLocaleString()}</td>
+      <td>${r.user_count||0}</td>
+      <td>${r.alert_count ? `<span class="badge badge-red">${r.alert_count}</span>` : '0'}</td>
+      <td><button class="btn-primary" onclick="openHostDetail('${escAttr(r.source_host)}','${escAttr(r.participant_id||'')}')">Detail</button></td>
+    </tr>`).join('');
+}
+
+async function openHostDetail(host, pid) {
+  document.getElementById('hostDetail').style.display = 'block';
+  document.getElementById('hdTitle').textContent = host;
+  document.getElementById('hostsTbody').closest('.card').style.display = 'none';
+
+  let url = `/api/hosts/${encodeURIComponent(host)}`;
+  if (pid) url += `?participant_id=${pid}`;
+  const data = await api(url);
+
+  document.getElementById('hdPhases').innerHTML = renderSimpleTable(data.phase_distribution||[], ['attack_phase','n'], ['Phase','Events']);
+  document.getElementById('hdUsers').innerHTML  = renderSimpleTable(data.users||[], ['user','n'], ['User','Events']);
+  document.getElementById('hdTools').innerHTML  = renderSimpleTable(data.tools||[], ['tool','n'], ['Tool','Events']);
+
+  const timeline = data.timeline || [];
+  document.getElementById('hdTimeline').innerHTML = timeline.map(r => `
+    <tr>
+      <td style="white-space:nowrap">${tsShort(r.timestamp_utc)}</td>
+      <td style="color:var(--green)">${escHtml(r.user||'-')}</td>
+      <td>${escHtml(r.action_name||r.action_category||'-')}</td>
+      <td style="color:var(--purple)">${escHtml(r.tool||'-')}</td>
+      <td class="cmd-cell" title="${escAttr(r.command)}">${escHtml(r.command||'')}</td>
+      <td>${phaseBadge(r.attack_phase)}</td>
+    </tr>`).join('');
+}
+
+function closeHostDetail() {
+  document.getElementById('hostDetail').style.display = 'none';
+  document.getElementById('hostsTbody').closest('.card').style.display = 'block';
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// NETWORK
+// ═══════════════════════════════════════════════════════════════════════════
+async function loadNetwork() {
+  const pid = document.getElementById('netParticipantFilter').value;
+  let url = '/api/network';
+  if (pid) url += `?participant_id=${pid}`;
+
+  const data = await api(url);
+  const maxSrc = (data.source_ips||[])[0]?.n || 1;
+  const maxDst = (data.destination_ips||[])[0]?.n || 1;
+
+  document.getElementById('srcIpList').innerHTML = (data.source_ips||[]).map(r => `
+    <div class="ip-row">
+      <div>
+        <div>${escHtml(r.src_ip)}</div>
+        <div class="ip-bar" style="width:${Math.round(r.n/maxSrc*100)}%"></div>
+      </div>
+      <span class="badge badge-cyan">${r.n.toLocaleString()}</span>
+    </div>`).join('') || '<div class="empty">No data</div>';
+
+  document.getElementById('dstIpList').innerHTML = (data.destination_ips||[]).map(r => `
+    <div class="ip-row">
+      <div>
+        <div>${escHtml(r.dest_ip)}</div>
+        <div class="ip-bar" style="width:${Math.round(r.n/maxDst*100)}%;background:var(--orange)"></div>
+      </div>
+      <span class="badge badge-orange">${r.n.toLocaleString()}</span>
+    </div>`).join('') || '<div class="empty">No data</div>';
+
+  const protos = data.protocols || [];
+  mkChart('protoChart', 'doughnut',
+    protos.map(p => p.protocol||'?'),
+    [{ data: protos.map(p => p.n), backgroundColor: COLORS, borderWidth: 0 }]
+  );
+
+  const conns = data.top_connections || [];
+  document.getElementById('topConnList').innerHTML = conns.map(r => `
+    <div class="rel-row">
+      <span class="rel-src">${escHtml(r.src_ip||'-')}</span>
+      <span class="rel-arrow">&#8594;</span>
+      <span class="rel-dst">${escHtml(r.dest_ip||'-')}</span>
+      <span class="badge badge-muted" style="margin:0 6px">${r.protocol||'?'}</span>
+      <span class="rel-weight">${r.n.toLocaleString()}</span>
+    </div>`).join('') || '<div class="empty">No data</div>';
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// ALERTS
+// ═══════════════════════════════════════════════════════════════════════════
+async function loadAlerts() {
+  const pid = document.getElementById('alertParticipantFilter').value;
+  let url = '/api/alerts';
+  if (pid) url += `?participant_id=${pid}`;
+
+  const data = await api(url);
+  const alerts = data.alerts || [];
+
+  document.getElementById('al-total').textContent = alerts.length.toLocaleString();
+  const sevNum = a => { const v = parseInt(a.alert_severity, 10); return isNaN(v) ? 0 : v; };
+  const high = alerts.filter(a => sevNum(a) >= 6).length;
+  const med  = alerts.filter(a => sevNum(a) >= 3 && sevNum(a) < 6).length;
+  const low  = alerts.filter(a => sevNum(a) > 0 && sevNum(a) < 3).length;
+  document.getElementById('al-high').textContent = high;
+  document.getElementById('al-med').textContent = med;
+  document.getElementById('al-low').textContent = low;
+
+  const sevLabel = a => {
+    const v = sevNum(a);
+    if (v >= 6) return 'HIGH';
+    if (v >= 3) return 'MED';
+    if (v > 0)  return 'LOW';
+    return String(a.alert_severity || '?');
+  };
+  const sevClass = a => {
+    const v = sevNum(a);
+    if (v >= 6) return 'sev-high';
+    if (v >= 3) return 'sev-med';
+    return 'sev-low';
+  };
+
+  const el = document.getElementById('alertsContainer');
+  if (!alerts.length) { el.innerHTML = '<div class="empty">No alerts</div>'; return; }
+  el.innerHTML = alerts.map(a => `
+    <div class="alert-row">
+      <div class="alert-sev ${sevClass(a)}">${sevLabel(a)}</div>
+      <div>
+        <div class="alert-type">${escHtml(a.alert_type||'Unknown')}</div>
+        <div class="alert-meta">${tsShort(a.timestamp_utc)} | ${escHtml(a.source_host||'-')} | ${escHtml(a.participant_id||'-')}</div>
+        ${a.src_ip||a.dest_ip ? `<div class="alert-meta">${escHtml(a.src_ip||'?')} &#8594; ${escHtml(a.dest_ip||'?')}</div>` : ''}
+      </div>
+    </div>`).join('');
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// BEHAVIOR
+// ═══════════════════════════════════════════════════════════════════════════
+async function loadBehavior() {
+  const pid = document.getElementById('behaviorParticipant').value;
+  if (!pid) return;
+
+  const data = await api(`/api/behavior/${pid}`);
+  document.getElementById('behaviorContent').style.display = 'block';
+
+  // Heatmap
+  const hourlyByPhase = data.hourly_by_phase || [];
+  renderHeatmap(hourlyByPhase);
+
+  // Tool list
+  const tools = data.tool_usage || [];
+  document.getElementById('behavToolList').innerHTML = tools.length
+    ? tools.map(t => `
+      <div class="rel-row">
+        <span class="rel-src">${escHtml(t.tool||'-')}</span>
+        <span class="rel-arrow"></span>
+        <span>${phaseBadge(t.attack_phase)}</span>
+        <span class="rel-weight">${t.n} uses</span>
+      </div>`).join('')
+    : '<div class="empty">No tool data</div>';
+
+  // User activity list
+  const userAct = data.user_activity || [];
+  document.getElementById('behavUserList').innerHTML = userAct.length
+    ? userAct.map(u => `
+      <div class="rel-row">
+        <span class="rel-src" style="color:var(--green)">${escHtml(u.user||'-')}</span>
+        <span class="rel-arrow"></span>
+        <span class="rel-dst" style="color:var(--text1)">${escHtml(u.action_category||'-')}</span>
+        <span class="rel-weight">${u.n}</span>
+      </div>`).join('')
+    : '<div class="empty">No user data</div>';
+
+  // Phase sequence chart
+  const seq = data.phase_sequence || [];
+  if (seq.length) {
+    const phaseNums = { recon:1,initial_access:2,lateral_movement:3,privilege_escalation:4,
+                        persistence:5,discovery:6,execution:7,command_and_control:8,
+                        exfiltration:9,defense_evasion:10,unknown:0 };
+    const sample = seq.filter((_,i) => i % Math.max(1, Math.floor(seq.length/200)) === 0);
+    mkChart('phaseSeqChart', 'line',
+      sample.map(s => tsShort(s.timestamp_utc)),
+      [{ data: sample.map(s => phaseNums[s.attack_phase]||0),
+         borderColor: '#00cfff', borderWidth: 1.5,
+         pointRadius: 0, fill: false, tension: 0.2 }],
+      {
+        plugins: { legend: { display: false } },
+        scales: {
+          x: { grid: { color: '#1e2638' }, ticks: { color: '#4a5568', maxTicksLimit: 8 } },
+          y: {
+            grid: { color: '#1e2638' },
+            ticks: { color: '#4a5568',
+              callback: v => Object.keys(phaseNums).find(k => phaseNums[k]===v) || ''
+            },
+            min: 0, max: 10
+          }
+        }
+      }
+    );
+  }
+}
+
+function renderHeatmap(hourlyByPhase) {
+  const hours = Array.from({length:24},(_,i)=>i);
+  const phaseSet = [...new Set(hourlyByPhase.map(r => r.attack_phase||'unknown'))].sort();
+
+  // Build lookup: phase -> hour -> count
+  const lookup = {};
+  hourlyByPhase.forEach(r => {
+    const ph = r.attack_phase||'unknown';
+    if (!lookup[ph]) lookup[ph] = {};
+    lookup[ph][r.hour] = r.n;
+  });
+
+  let html = '<div class="heatmap-grid">';
+  // Header row: empty + hours
+  html += '<div class="heatmap-hdr"></div>';
+  hours.forEach(h => { html += `<div class="heatmap-hdr">${String(h).padStart(2,'0')}</div>`; });
+
+  phaseSet.forEach(ph => {
+    const phData = lookup[ph] || {};
+    const max = Math.max(...Object.values(phData), 1);
+    const c = phaseColor(ph);
+    html += `<div class="heatmap-label">${phaseLabel(ph)}</div>`;
+    hours.forEach(h => {
+      const n = phData[h] || 0;
+      const alpha = n ? Math.max(0.1, n/max) : 0;
+      html += `<div class="heatmap-cell" style="background:${n?`rgba(${hexToRgb(c)},${alpha.toFixed(2)})`:'var(--bg3)'}" title="${phaseLabel(ph)} @${h}:00 — ${n} events"></div>`;
+    });
+  });
+
+  html += '</div>';
+  document.getElementById('heatmapContainer').innerHTML = html;
+}
+
+function hexToRgb(hex) {
+  const r = parseInt(hex.slice(1,3),16);
+  const g = parseInt(hex.slice(3,5),16);
+  const b = parseInt(hex.slice(5,7),16);
+  return `${r},${g},${b}`;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// MEDIA
+// ═══════════════════════════════════════════════════════════════════════════
+async function loadMedia() {
+  const pid = document.getElementById('mediaParticipantFilter').value;
+  let url = '/api/media';
+  if (pid) url += `?participant_id=${pid}`;
+
+  const data = await api(url);
+  const items = data.media || [];
+  const grid = document.getElementById('mediaGrid');
+
+  if (!items.length) { grid.innerHTML = '<div class="empty">No media found</div>'; return; }
+  grid.innerHTML = items.map(m => {
+    const fname = (m.source_file||'').split('/').pop();
+    const ext = fname.split('.').pop().toLowerCase();
+    const typeLabel = ext === 'mp4' || ext === 'mkv' ? 'VIDEO'
+                    : ext === 'cast' ? 'CAST'
+                    : ext === 'pcap' ? 'PCAP'
+                    : ext.toUpperCase() || 'FILE';
+    return `
+      <div class="media-card">
+        <div class="media-icon media-type-badge">${typeLabel}</div>
+        <div class="media-name">${escHtml(fname||m.action_name||'file')}</div>
+        <div class="media-meta">${escHtml(m.participant_id||'-')} / ${escHtml(m.source_host||'-')}</div>
+        <div class="media-meta">${tsShort(m.timestamp_utc)}</div>
+        ${m.source_file ? `<div class="media-meta" style="word-break:break-all;margin-top:4px;font-size:9px;color:var(--text2)">${escHtml(m.source_file)}</div>` : ''}
+      </div>`;
+  }).join('');
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// SEARCH
+// ═══════════════════════════════════════════════════════════════════════════
+async function runSearch() {
+  const q = document.getElementById('searchQuery').value.trim();
+  if (!q) return;
+  const pid = document.getElementById('searchParticipant').value;
+
+  let url = `/api/search?q=${encodeURIComponent(q)}`;
+  if (pid) url += `&participant_id=${pid}`;
+
+  const el = document.getElementById('searchResultsContainer');
+  el.innerHTML = '<div class="spin-wrap"><div class="spinner"></div></div>';
+
+  const data = await api(url);
+  const rows = data.results || [];
+  document.getElementById('searchResultTitle').textContent = `Results (${rows.length})`;
+
+  if (!rows.length) { el.innerHTML = '<div class="empty">No results</div>'; return; }
+  el.innerHTML = rows.map(r => `
+    <div class="search-result-row">
+      <div class="sr-action">${escHtml(r.action_name||r.action_category||'-')} ${phaseBadge(r.attack_phase)}</div>
+      <div class="sr-meta">${tsShort(r.timestamp_utc)} | ${escHtml(r.participant_id||'-')} | ${escHtml(r.source_host||'-')} | user: ${escHtml(r.user||'-')}</div>
+      ${r.command ? `<div class="sr-cmd">${escHtml(r.command)}</div>` : ''}
+      ${r.alert_type ? `<div class="sr-meta" style="color:var(--red)">${escHtml(r.alert_type)}</div>` : ''}
+    </div>`).join('');
+}
+
+document.getElementById('searchQuery').addEventListener('keydown', e => {
+  if (e.key === 'Enter') runSearch();
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Helpers
+// ═══════════════════════════════════════════════════════════════════════════
+function escHtml(s) {
+  if (s == null) return '';
+  return String(s)
+    .replace(/&/g,'&amp;')
+    .replace(/</g,'&lt;')
+    .replace(/>/g,'&gt;')
+    .replace(/"/g,'&quot;');
+}
+function escAttr(s) { return escHtml(s).replace(/'/g,'&#39;'); }
+
+// ─── Boot ──────────────────────────────────────────────────────────────────
+// ─── Projects ──────────────────────────────────────────────────────────────
+
+function toggleProjType() {
+  const type = document.querySelector('input[name="projType"]:checked').value;
+  document.getElementById('projFilterOptions').style.display = type === 'filter' ? 'grid' : 'none';
+  document.getElementById('projDatasetOptions').style.display = type === 'dataset' ? 'block' : 'none';
+}
+
+function selValues(id) {
+  const el = document.getElementById(id);
+  if (!el) return [];
+  return Array.from(el.selectedOptions).map(o => o.value).filter(Boolean);
+}
+
+async function createProject() {
+  const name = (document.getElementById('projName').value || '').trim();
+  if (!name) { alert('Project name is required'); return; }
+  const type = document.querySelector('input[name="projType"]:checked').value;
+  const desc = (document.getElementById('projDesc').value || '').trim();
+  const body = { name, description: desc, project_type: type };
+  if (type === 'dataset') {
+    const dp = (document.getElementById('projDataPath').value || '').trim();
+    if (!dp) { alert('Data directory path is required for dataset projects'); return; }
+    body.data_path = dp;
+  } else {
+    body.filter_json = {
+      participant_ids: selValues('projParticipants'),
+      phases: selValues('projPhases'),
+      date_from: document.getElementById('projDateFrom').value || '',
+      date_to: document.getElementById('projDateTo').value || '',
+      source_types: selValues('projSourceTypes'),
+    };
+  }
+  try {
+    const r = await fetch(`${API}/api/projects`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    if (!r.ok) { const e = await r.json(); alert('Error: ' + (e.detail || r.status)); return; }
+    document.getElementById('projName').value = '';
+    document.getElementById('projDesc').value = '';
+    loadProjects();
+  } catch(e) { alert('Request failed: ' + e); }
+}
+
+async function loadProjects() {
+  const el = document.getElementById('projectListContainer');
+  if (!el) return;
+  el.innerHTML = '<div class="empty">Loading...</div>';
+  try {
+    const projects = await api('/api/projects');
+    if (!projects.length) { el.innerHTML = '<div class="empty">No projects yet</div>'; return; }
+    el.innerHTML = '';
+    projects.forEach(p => el.appendChild(buildProjectCard(p)));
+  } catch(e) { el.innerHTML = `<div class="empty">Error: ${e}</div>`; }
+}
+
+function buildProjectCard(p) {
+  const card = document.createElement('div');
+  card.style.cssText = 'border:1px solid #1e2638;border-radius:6px;padding:14px;margin-bottom:12px;background:#0d1117;';
+  const badge = p.project_type === 'dataset'
+    ? '<span style="background:#8b5cf6;color:#fff;font-size:10px;padding:2px 7px;border-radius:3px;letter-spacing:.05em;">DATASET</span>'
+    : '<span style="background:#00cfff;color:#0d1117;font-size:10px;padding:2px 7px;border-radius:3px;letter-spacing:.05em;">FILTER</span>';
+  const cnt = p.event_count.toLocaleString();
+  const created = p.created_at ? p.created_at.substring(0, 10) : '?';
+  card.innerHTML = `
+    <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:8px;margin-bottom:8px;">
+      <div>
+        <span style="font-weight:600;color:#e8eaf6;">${escHtml(p.name)}</span>
+        ${badge}
+      </div>
+      <button class="btn-sm" style="color:#ff3c5c;border-color:#ff3c5c33;" onclick="deleteProject('${p.project_id}', this)">Delete</button>
+    </div>
+    ${p.description ? `<div style="font-size:11px;color:#8893a8;margin-bottom:6px;">${escHtml(p.description)}</div>` : ''}
+    <div style="font-size:11px;color:#8893a8;margin-bottom:10px;">${cnt} events &nbsp;&middot;&nbsp; Created ${created}</div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
+      <button class="btn-sm" onclick="exportProject('${p.project_id}','csv')">CSV</button>
+      <button class="btn-sm" onclick="exportProject('${p.project_id}','json')">JSON</button>
+      <button class="btn-sm" onclick="exportProject('${p.project_id}','sqlite')">SQLite</button>
+      ${p.project_type === 'dataset'
+        ? `<button class="btn-sm" onclick="ingestProject('${p.project_id}', this)">Ingest</button>` : ''}
+      <button class="btn-sm" onclick="showProjectTree('${p.project_id}', '${escHtml(p.name)}')">Tree</button>
+    </div>`;
+  return card;
+}
+
+async function deleteProject(pid, btn) {
+  if (!confirm('Delete this project?')) return;
+  btn.disabled = true;
+  try {
+    const r = await fetch(`${API}/api/projects/${pid}`, { method: 'DELETE' });
+    if (!r.ok && r.status !== 204) { alert('Delete failed: ' + r.status); btn.disabled = false; return; }
+    loadProjects();
+  } catch(e) { alert('Request failed: ' + e); btn.disabled = false; }
+}
+
+function exportProject(pid, fmt) {
+  const a = document.createElement('a');
+  a.href = `${API}/api/projects/${pid}/export/${fmt}`;
+  a.download = '';
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+}
+
+async function ingestProject(pid, btn) {
+  btn.disabled = true;
+  btn.textContent = 'Ingesting...';
+  try {
+    const r = await fetch(`${API}/api/projects/${pid}/ingest`, { method: 'POST' });
+    if (!r.ok) { const e = await r.json(); alert('Error: ' + (e.detail || r.status)); btn.disabled = false; btn.textContent = 'Ingest'; return; }
+    setTimeout(() => { loadProjects(); btn.disabled = false; btn.textContent = 'Ingest'; }, 3000);
+  } catch(e) { alert('Ingest error: ' + e); btn.disabled = false; btn.textContent = 'Ingest'; }
+}
+
+async function showProjectTree(pid, name) {
+  const el = document.getElementById('activeTreeContainer');
+  if (!el) return;
+  el.innerHTML = '<div class="empty">Loading tree...</div>';
+  try {
+    const data = await api(`/api/projects/${pid}/tree`);
+    renderTree(el, data.tree, `Project: ${name}`);
+  } catch(e) { el.innerHTML = `<div class="empty">Error: ${e}</div>`; }
+}
+
+async function loadActiveTree() {
+  const el = document.getElementById('activeTreeContainer');
+  if (!el) return;
+  el.innerHTML = '<div class="empty">Loading...</div>';
+  try {
+    const data = await api('/api/tree');
+    renderTree(el, data.tree, 'Active Dataset');
+  } catch(e) { el.innerHTML = `<div class="empty">Error: ${e}</div>`; }
+}
+
+function renderTree(container, tree, rootLabel) {
+  container.innerHTML = '';
+  const root = buildTreeNode(rootLabel, tree.reduce((s,p) => s + p.event_count, 0), 0, true);
+  container.appendChild(root);
+  tree.forEach(p => {
+    const pNode = buildTreeNode(p.participant_id, p.event_count, 1);
+    root.querySelector('.tree-children').appendChild(pNode);
+    (p.scenarios || []).forEach(sc => {
+      const scNode = buildTreeNode(sc.name, sc.event_count, 2);
+      pNode.querySelector('.tree-children').appendChild(scNode);
+      (sc.hosts || []).forEach(h => {
+        const hNode = buildTreeNode(h.name, h.event_count, 3);
+        scNode.querySelector('.tree-children').appendChild(hNode);
+        (h.files || []).forEach(f => {
+          const fNode = buildTreeNode(f.name, f.event_count, 4, false, true);
+          hNode.querySelector('.tree-children').appendChild(fNode);
+        });
+      });
+    });
+  });
+}
+
+function buildTreeNode(label, count, depth, expanded=false, isLeaf=false) {
+  const wrapper = document.createElement('div');
+  const indent = depth * 14;
+  const colors = ['#00cfff','#00e87a','#ff9326','#8b5cf6','#8893a8'];
+  const col = colors[Math.min(depth, colors.length-1)];
+  wrapper.innerHTML = `
+    <div class="tree-row" style="display:flex;align-items:center;gap:6px;padding:4px 8px 4px ${indent+4}px;cursor:${isLeaf?'default':'pointer'};border-radius:4px;user-select:none;" onmouseenter="this.style.background='#1e2638'" onmouseleave="this.style.background=''">
+      ${!isLeaf ? `<span class="tree-toggle" style="font-size:10px;color:#8893a8;width:10px;text-align:center;">${expanded ? '▾' : '▸'}</span>` : '<span style="width:10px;"></span>'}
+      <span style="font-size:12px;color:${col};overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;" title="${escHtml(label)}">${escHtml(label)}</span>
+      <span style="font-size:10px;color:#8893a8;background:#1e2638;padding:1px 5px;border-radius:3px;white-space:nowrap;">${count.toLocaleString()}</span>
+    </div>
+    <div class="tree-children" style="display:${expanded ? 'block' : 'none'};"></div>`;
+  if (!isLeaf) {
+    wrapper.querySelector('.tree-row').addEventListener('click', () => {
+      const children = wrapper.querySelector('.tree-children');
+      const toggle = wrapper.querySelector('.tree-toggle');
+      const open = children.style.display !== 'none';
+      children.style.display = open ? 'none' : 'block';
+      toggle.textContent = open ? '▸' : '▾';
+    });
+    if (expanded) {
+      // already shown
+    }
+  }
+  return wrapper;
+}
+
+(async function init() {
+  try {
+    await loadOverview();
+    // Pre-load participant list to populate selects
+    const pd = await api('/api/participants');
+    _participants = pd.participants || [];
+    populateParticipantSelects(_participants);
+  } catch(e) {
+    console.error('Init error:', e);
+  }
+})();
+</script>
+</body>
+</html>

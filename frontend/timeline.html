@@ -1,0 +1,741 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>GODEYE - Cyber Timeline</title>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;700&display=swap');
+        
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        :root {
+            --bg-primary: #0a0a0f;
+            --bg-secondary: #12121a;
+            --bg-panel: #0d0d14;
+            --bg-hover: #1a1a25;
+            --cyan: #00ffff;
+            --cyan-dim: #00aaaa;
+            --magenta: #ff00ff;
+            --green: #00ff00;
+            --red: #ff3333;
+            --yellow: #ffff00;
+            --white: #e0e0e0;
+            --gray: #666680;
+            --border: #1e1e2e;
+        }
+        
+        body {
+            font-family: 'JetBrains Mono', monospace;
+            background: var(--bg-primary);
+            color: var(--white);
+            min-height: 100vh;
+            overflow-x: hidden;
+        }
+        
+        /* Header */
+        .header {
+            background: linear-gradient(180deg, var(--bg-secondary) 0%, var(--bg-primary) 100%);
+            border-bottom: 1px solid var(--border);
+            padding: 12px 20px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        
+        .logo {
+            font-size: 20px;
+            font-weight: 700;
+            background: linear-gradient(90deg, var(--cyan), var(--magenta));
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+        
+        .header-controls {
+            display: flex;
+            gap: 10px;
+            align-items: center;
+        }
+        
+        select {
+            background: var(--bg-panel);
+            border: 1px solid var(--border);
+            color: var(--white);
+            padding: 6px 12px;
+            font-family: inherit;
+            font-size: 12px;
+            border-radius: 4px;
+            cursor: pointer;
+        }
+        
+        select:hover {
+            border-color: var(--cyan);
+        }
+        
+        /* Controls */
+        .controls {
+            background: var(--bg-secondary);
+            border-bottom: 1px solid var(--border);
+            padding: 10px 20px;
+            display: flex;
+            align-items: center;
+            gap: 15px;
+        }
+        
+        .btn {
+            background: var(--bg-panel);
+            border: 1px solid var(--border);
+            color: var(--white);
+            width: 36px;
+            height: 36px;
+            border-radius: 4px;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 14px;
+            transition: all 0.2s;
+        }
+        
+        .btn:hover {
+            background: var(--bg-hover);
+            border-color: var(--cyan);
+        }
+        
+        .btn.active {
+            background: var(--cyan);
+            color: var(--bg-primary);
+        }
+        
+        .time-display {
+            font-size: 18px;
+            font-weight: 500;
+            color: var(--cyan);
+            min-width: 100px;
+            text-align: center;
+        }
+        
+        .timeline-slider {
+            flex: 1;
+            height: 6px;
+            -webkit-appearance: none;
+            background: var(--bg-panel);
+            border-radius: 3px;
+            outline: none;
+            cursor: pointer;
+        }
+        
+        .timeline-slider::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            width: 14px;
+            height: 14px;
+            background: var(--cyan);
+            border-radius: 50%;
+            cursor: pointer;
+        }
+        
+        .duration-display {
+            font-size: 12px;
+            color: var(--gray);
+            min-width: 70px;
+        }
+        
+        /* Main Grid */
+        .main-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            grid-template-rows: 1fr 1fr;
+            gap: 8px;
+            padding: 8px;
+            height: calc(100vh - 180px);
+        }
+        
+        .panel {
+            background: var(--bg-panel);
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            overflow: hidden;
+            display: flex;
+            flex-direction: column;
+        }
+        
+        .panel-header {
+            background: var(--bg-secondary);
+            padding: 8px 12px;
+            border-bottom: 1px solid var(--border);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            font-size: 12px;
+            font-weight: 500;
+        }
+        
+        .panel-header.video { color: var(--magenta); }
+        .panel-header.terminal { color: var(--green); }
+        .panel-header.network { color: var(--cyan); }
+        .panel-header.keylogger { color: var(--yellow); }
+        .panel-header.logs { color: var(--gray); }
+        
+        .panel-content {
+            flex: 1;
+            overflow: auto;
+            padding: 8px;
+            font-size: 11px;
+        }
+        
+        /* Video */
+        .video-container {
+            width: 100%;
+            height: 100%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            background: #000;
+            border-radius: 4px;
+        }
+        
+        video {
+            max-width: 100%;
+            max-height: 100%;
+        }
+        
+        .video-placeholder {
+            text-align: center;
+            color: var(--gray);
+        }
+        
+        /* Terminal */
+        .terminal-content {
+            background: #0a0a10;
+            padding: 8px;
+            border-radius: 4px;
+            height: 100%;
+            overflow: auto;
+            font-family: 'JetBrains Mono', monospace;
+        }
+        
+        .terminal-line {
+            margin-bottom: 4px;
+            display: flex;
+            gap: 8px;
+        }
+        
+        .terminal-time {
+            color: var(--gray);
+            font-size: 10px;
+            min-width: 50px;
+        }
+        
+        .terminal-prompt {
+            color: var(--green);
+        }
+        
+        .terminal-cmd {
+            color: var(--white);
+            word-break: break-all;
+        }
+        
+        /* Network */
+        .network-flow {
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+        }
+        
+        .flow-item {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 6px;
+            background: var(--bg-secondary);
+            border-radius: 4px;
+            font-size: 10px;
+        }
+        
+        .flow-src { color: var(--magenta); }
+        .flow-dst { color: var(--cyan); }
+        
+        /* Keylogger */
+        .keylogger-content {
+            background: var(--bg-secondary);
+            padding: 10px;
+            border-radius: 4px;
+            font-size: 13px;
+            color: var(--yellow);
+            word-break: break-all;
+            height: 100%;
+            overflow: auto;
+        }
+        
+        /* Logs */
+        .log-entry {
+            display: flex;
+            gap: 8px;
+            padding: 4px 0;
+            border-bottom: 1px solid var(--border);
+            font-size: 10px;
+        }
+        
+        .log-time { color: var(--gray); min-width: 60px; }
+        .log-source { color: var(--cyan); min-width: 60px; }
+        .log-msg { color: var(--white); flex: 1; }
+        
+        /* Timeline */
+        .timeline-bar {
+            background: var(--bg-secondary);
+            border-top: 1px solid var(--border);
+            padding: 10px 20px;
+        }
+        
+        .timeline-track {
+            position: relative;
+            height: 30px;
+            background: var(--bg-panel);
+            border-radius: 4px;
+            cursor: pointer;
+        }
+        
+        .timeline-playhead {
+            position: absolute;
+            top: 0;
+            width: 2px;
+            height: 100%;
+            background: var(--cyan);
+            z-index: 10;
+            transition: left 0.1s;
+        }
+        
+        .timeline-markers {
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+        }
+        
+        .marker {
+            position: absolute;
+            width: 2px;
+            height: 100%;
+            opacity: 0.6;
+        }
+        
+        .marker.recon { background: var(--magenta); }
+        .marker.initial_access { background: var(--red); }
+        .marker.lateral_movement { background: var(--yellow); }
+        .marker.privilege_escalation { background: var(--cyan); }
+        .marker.persistence { background: var(--green); }
+        
+        /* Scrollbar */
+        ::-webkit-scrollbar { width: 6px; height: 6px; }
+        ::-webkit-scrollbar-track { background: var(--bg-primary); }
+        ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+        
+        /* Loading */
+        .loading {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            height: 100%;
+            color: var(--gray);
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <div class="logo">GODEYE // TIMELINE</div>
+        <div class="header-controls">
+            <a href="/dashboard" style="color:var(--cyan);font-size:12px;text-decoration:none;padding:5px 10px;border:1px solid var(--border);border-radius:4px;">Analytics</a>
+            <a href="/threat" style="color:var(--cyan);font-size:12px;text-decoration:none;padding:5px 10px;border:1px solid var(--border);border-radius:4px;">Threat Intel</a>
+            <select id="participantSelect">
+                <option value="">Select Participant</option>
+            </select>
+        </div>
+    </div>
+    
+    <div class="controls">
+        <button class="btn" id="btnBack" title="Back 30s">⏮</button>
+        <button class="btn" id="btnPlayPause" title="Play/Pause">▶</button>
+        <button class="btn" id="btnForward" title="Forward 30s">⏭</button>
+        <div class="time-display" id="timeDisplay">00:00</div>
+        <input type="range" class="timeline-slider" id="timelineSlider" min="0" max="100" value="0">
+        <div class="duration-display" id="durationDisplay">00:00</div>
+    </div>
+    
+    <div class="main-grid">
+        <!-- Video -->
+        <div class="panel">
+            <div class="panel-header video">📺 VIDEO</div>
+            <div class="panel-content">
+                <div class="video-container" id="videoContainer">
+                    <div class="video-placeholder">Loading...</div>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Terminal -->
+        <div class="panel">
+            <div class="panel-header terminal">💻 TERMINAL COMMANDS</div>
+            <div class="panel-content">
+                <div class="terminal-content" id="terminalContent">
+                    <div class="loading">Loading...</div>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Network -->
+        <div class="panel">
+            <div class="panel-header network">🌐 NETWORK ACTIVITY</div>
+            <div class="panel-content">
+                <div class="network-flow" id="networkFlow">
+                    <div class="loading">Loading...</div>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Keylogger -->
+        <div class="panel">
+            <div class="panel-header keylogger">⌨️ KEYLOGGER</div>
+            <div class="panel-content">
+                <div class="keylogger-content" id="keyloggerContent">
+                    Loading...
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <div class="timeline-bar">
+        <div class="timeline-track" id="timelineTrack">
+            <div class="timeline-markers" id="timelineMarkers"></div>
+            <div class="timeline-playhead" id="timelinePlayhead"></div>
+        </div>
+    </div>
+
+    <script>
+        const API_BASE = window.location.origin;
+        
+        let state = {
+            playing: false,
+            currentOffset: 0,
+            duration: 0,
+            participant: null,
+            mediaItems: [],
+            events: [],
+            playbackInterval: null,
+            lastFetch: { terminal: null, network: null, keylogger: null }
+        };
+        
+        async function init() {
+            await loadParticipants();
+            setupEventListeners();
+        }
+        
+        async function loadParticipants() {
+            try {
+                const resp = await fetch(`${API_BASE}/api/participants`);
+                const data = await resp.json();
+                const select = document.getElementById('participantSelect');
+                data.participants.forEach(p => {
+                    const opt = document.createElement('option');
+                    opt.value = p.participant_id;
+                    opt.textContent = `${p.participant_id} - ${p.scenario_name} (${p.total_events} events)`;
+                    select.appendChild(opt);
+                });
+            } catch (e) {
+                console.error('Failed to load participants:', e);
+            }
+        }
+        
+        function setupEventListeners() {
+            document.getElementById('participantSelect').addEventListener('change', async (e) => {
+                state.participant = e.target.value;
+                if (state.participant) {
+                    await loadTimeline();
+                }
+            });
+            
+            document.getElementById('btnPlayPause').addEventListener('click', togglePlay);
+            document.getElementById('btnBack').addEventListener('click', () => seek(-30));
+            document.getElementById('btnForward').addEventListener('click', () => seek(30));
+            
+            document.getElementById('timelineSlider').addEventListener('input', (e) => {
+                state.currentOffset = parseFloat(e.target.value);
+                updateUI();
+            });
+            
+            document.getElementById('timelineTrack').addEventListener('click', (e) => {
+                const rect = e.target.getBoundingClientRect();
+                const percent = (e.clientX - rect.left) / rect.width;
+                state.currentOffset = percent * state.duration;
+                updateUI();
+            });
+        }
+        
+        async function loadTimeline() {
+            try {
+                const resp = await fetch(`${API_BASE}/api/timeline/sync?participant_id=${state.participant}`);
+                const data = await resp.json();
+                
+                state.mediaItems = data.media_items || [];
+                state.duration = data.time_range?.duration_seconds || 0;
+                state.currentOffset = 0;
+                
+                document.getElementById('timelineSlider').max = state.duration;
+                document.getElementById('durationDisplay').textContent = formatTime(state.duration);
+                
+                renderTimelineMarkers();
+                await loadAllEvents();
+                updateUI();
+                
+            } catch (e) {
+                console.error('Failed to load timeline:', e);
+            }
+        }
+        
+        async function loadAllEvents() {
+            try {
+                const resp = await fetch(
+                    `${API_BASE}/api/timeline/events?participant_id=${state.participant}&limit=1000`
+                );
+                const data = await resp.json();
+                state.events = data.events || [];
+                console.log(`Loaded ${state.events.length} events`);
+            } catch (e) {
+                console.error('Failed to load events:', e);
+            }
+        }
+        
+        function updateUI() {
+            // Update time display
+            document.getElementById('timeDisplay').textContent = formatTime(state.currentOffset);
+            
+            // Update slider
+            const percent = state.duration > 0 ? (state.currentOffset / state.duration) * 100 : 0;
+            document.getElementById('timelineSlider').value = state.currentOffset;
+            document.getElementById('timelinePlayhead').style.left = `${percent}%`;
+            
+            // Update panels
+            updateVideo();
+            updateTerminal();
+            updateNetwork();
+            updateKeylogger();
+        }
+        
+        function updateVideo() {
+            const container = document.getElementById('videoContainer');
+            const videoItem = state.mediaItems.find(m => m.media_type === 'video');
+            
+            if (!videoItem) {
+                container.innerHTML = '<div class="video-placeholder">No video available</div>';
+                return;
+            }
+            
+            const videoStart = videoItem.start_unix || 0;
+            const videoEnd = videoItem.end_unix || videoStart + 3600;
+            
+            if (state.currentOffset >= videoStart && state.currentOffset <= videoEnd) {
+                if (!container.querySelector('video')) {
+                    container.innerHTML = `<video id="mainVideo" src="file://${videoItem.source_file}" preload="auto"></video>`;
+                    const video = document.getElementById('mainVideo');
+                    video.addEventListener('loadedmetadata', () => {
+                        state.videoDuration = video.duration;
+                    });
+                }
+                const video = document.getElementById('mainVideo');
+                if (video) {
+                    const seekTime = state.currentOffset - videoStart;
+                    if (Math.abs(video.currentTime - seekTime) > 1) {
+                        video.currentTime = seekTime;
+                    }
+                }
+            } else {
+                container.innerHTML = `<div class="video-placeholder">Video: ${formatTime(videoStart)} - ${formatTime(videoEnd)}</div>`;
+            }
+        }
+        
+        function updateTerminal() {
+            const container = document.getElementById('terminalContent');
+            
+            // Get terminal events within time window
+            const windowStart = state.currentOffset - 120;
+            const windowEnd = state.currentOffset + 60;
+            
+            const terminalEvents = state.events
+                .filter(e => e.source_type === 'terminal_recording')
+                .filter(e => {
+                    const ts = parseTimestamp(e.timestamp_utc);
+                    return ts >= windowStart && ts <= windowEnd;
+                })
+                .slice(-10);
+            
+            if (terminalEvents.length === 0) {
+                container.innerHTML = '<div class="loading">No commands in this time range</div>';
+                return;
+            }
+            
+            let html = '';
+            terminalEvents.forEach(ev => {
+                const ts = parseTimestamp(e.timestamp_utc);
+                const offset = ts;
+                html += `
+                    <div class="terminal-line">
+                        <span class="terminal-time">${formatTime(offset)}</span>
+                        <span class="terminal-prompt">$</span>
+                        <span class="terminal-cmd">${escapeHtml(ev.command || '')}</span>
+                    </div>
+                `;
+            });
+            container.innerHTML = html;
+            container.scrollTop = container.scrollHeight;
+        }
+        
+        function updateNetwork() {
+            const container = document.getElementById('networkFlow');
+            
+            const windowStart = state.currentOffset - 60;
+            const windowEnd = state.currentOffset + 30;
+            
+            const networkEvents = state.events
+                .filter(e => ['zeek', 'suricata', 'bt_jsonl', 'sensor'].includes(e.source_type))
+                .filter(e => {
+                    const ts = parseTimestamp(e.timestamp_utc);
+                    return ts >= windowStart && ts <= windowEnd;
+                })
+                .slice(-20);
+            
+            if (networkEvents.length === 0) {
+                container.innerHTML = '<div class="loading">No network activity in this time range</div>';
+                return;
+            }
+            
+            let html = '';
+            networkEvents.forEach(ev => {
+                const src = ev.src_ip || '*';
+                const dst = ev.dest_ip || '*';
+                const port = ev.dest_port || '';
+                const proto = ev.protocol || 'tcp';
+                html += `
+                    <div class="flow-item">
+                        <span class="flow-src">${src}</span>
+                        <span>→</span>
+                        <span class="flow-dst">${dst}</span>
+                        <span>${port ? ':' + port : ''}</span>
+                        <span style="color:var(--gray)">${proto}</span>
+                    </div>
+                `;
+            });
+            container.innerHTML = html;
+        }
+        
+        function updateKeylogger() {
+            const container = document.getElementById('keyloggerContent');
+            
+            const windowStart = state.currentOffset - 120;
+            const windowEnd = state.currentOffset + 30;
+            
+            const keyloggerEvents = state.events
+                .filter(e => e.source_type === 'uat')
+                .filter(e => {
+                    const ts = parseTimestamp(e.timestamp_utc);
+                    return ts >= windowStart && ts <= windowEnd;
+                })
+                .slice(-5);
+            
+            if (keyloggerEvents.length === 0) {
+                container.textContent = 'No keystrokes in this time range';
+                return;
+            }
+            
+            // Get the most recent keystroke text
+            const latest = keyloggerEvents[keyloggerEvents.length - 1];
+            container.textContent = latest.typed_text || latest.command || '';
+        }
+        
+        function renderTimelineMarkers() {
+            const container = document.getElementById('timelineMarkers');
+            
+            if (state.events.length === 0) return;
+            
+            // Group events by phase
+            const phases = {};
+            state.events.forEach(ev => {
+                const phase = ev.attack_phase || 'unknown';
+                const ts = parseTimestamp(ev.timestamp_utc);
+                if (!phases[phase]) phases[phase] = [];
+                phases[phase].push(ts);
+            });
+            
+            let html = '';
+            Object.entries(phases).forEach(([phase, times]) => {
+                if (phase === 'unknown' || !['recon', 'initial_access', 'lateral_movement', 'privilege_escalation', 'persistence'].includes(phase)) return;
+                
+                times.forEach(ts => {
+                    const percent = state.duration > 0 ? (ts / state.duration) * 100 : 0;
+                    if (percent >= 0 && percent <= 100) {
+                        html += `<div class="marker ${phase}" style="left: ${percent}%"></div>`;
+                    }
+                });
+            });
+            container.innerHTML = html;
+        }
+        
+        function togglePlay() {
+            state.playing = !state.playing;
+            const btn = document.getElementById('btnPlayPause');
+            
+            if (state.playing) {
+                btn.textContent = '⏸';
+                btn.classList.add('active');
+                state.playbackInterval = setInterval(() => {
+                    if (state.currentOffset < state.duration) {
+                        state.currentOffset += 1;
+                        updateUI();
+                    } else {
+                        state.currentOffset = 0;
+                        togglePlay();
+                    }
+                }, 1000);
+            } else {
+                btn.textContent = '▶';
+                btn.classList.remove('active');
+                if (state.playbackInterval) {
+                    clearInterval(state.playbackInterval);
+                }
+            }
+        }
+        
+        function seek(seconds) {
+            state.currentOffset = Math.max(0, Math.min(state.duration, state.currentOffset + seconds));
+            updateUI();
+        }
+        
+        function formatTime(seconds) {
+            if (!seconds || isNaN(seconds)) return '00:00';
+            const m = Math.floor(seconds / 60);
+            const s = Math.floor(seconds % 60);
+            return `${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
+        }
+        
+        function parseTimestamp(ts) {
+            if (!ts) return 0;
+            // Assuming timestamp is already in offset_seconds format
+            // or we need to calculate from media_registry
+            return parseFloat(ts) || 0;
+        }
+        
+        function escapeHtml(text) {
+            if (!text) return '';
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+        
+        // Start
+        init();
+    </script>
+</body>
+</html>
