@@ -1,6 +1,6 @@
 # GOD EYE
 
-Plataforma de análisis de escenarios de ciberseguridad. Visualiza grabaciones de pantalla sincronizadas con eventos de red, terminal, autenticación, syslog y más en una interfaz HUD estilo Palantir.
+Plataforma de análisis de escenarios de ciberseguridad. Visualiza grabaciones de pantalla sincronizadas con eventos de red, terminal, autenticación, syslog y más en una interfaz HUD .
 
 ![GOD EYE Interface](TH.png)
 
@@ -93,7 +93,7 @@ godeye/
 ├── api/
 │   └── main.py            # FastAPI — todos los endpoints
 ├── frontend/
-│   └── palantir.html      # UI principal (single page)
+│   └── a.html      # UI principal (single page)
 ├── import_manager.py      # Pipeline de importación + validación
 ├── ingest_v2.py           # Motor de ingestión
 ├── .env.example           # Plantilla de configuración
