@@ -2553,36 +2553,162 @@ async def media_list(participant_id: str, project_id: str = ""):
     return {"media": rows}
 
 
-@app.get("/api/media/video/{participant_id}")
-async def media_video(participant_id: str, t: float = 0.0):
-    """Stream video with browser-compatible codec. Prefers pre-transcoded .webm; otherwise
-    stream-transcodes OGV/Theora → VP8 WebM via ffmpeg (Chrome/Edge dropped Theora support).
-    The ?t= parameter seeks to a specific second offset before streaming starts."""
+# ---------------------------------------------------------------------------
+# Video transcode cache — register of background transcode jobs by participant_id
+# ---------------------------------------------------------------------------
+_VIDEO_PREP_STATE: dict = {}
+_VIDEO_PREP_LOCK = threading.Lock()
+
+
+def _video_source_for(participant_id: str) -> Optional[Path]:
     rows = q(
         "SELECT source_file FROM media_registry WHERE participant_id = ? AND media_type = 'video' LIMIT 1",
         (participant_id,),
     )
     if not rows:
-        raise HTTPException(status_code=404, detail="No video found for participant")
-    path = Path(rows[0]["source_file"])
+        return None
+    return Path(rows[0]["source_file"])
 
-    # Prefer pre-transcoded .webm — supports full native seeking
-    webm_path = path.with_suffix(".webm")
-    if webm_path.exists():
-        return FileResponse(str(webm_path), media_type="video/webm", headers={
-            "Accept-Ranges": "bytes",
-            "Cache-Control": "no-cache",
-        })
 
-    if not path.exists():
-        raise HTTPException(status_code=404, detail=f"Video file not found: {path}")
+def _cached_video_for(src: Path) -> Path:
+    """Return the cached browser-friendly copy path for a source video.
 
-    # Native .webm — serve directly
-    if path.suffix.lower() == ".webm":
-        return FileResponse(str(path), media_type="video/webm", headers={
-            "Accept-Ranges": "bytes",
-            "Cache-Control": "no-cache",
-        })
+    H.264/MP4 is used because libx264 encodes ~10x faster than libvpx (VP8/VP9),
+    every modern browser plays MP4 with full Range/seek support, and the file
+    sizes are comparable at equivalent quality."""
+    return src.with_suffix(".mp4")
+
+
+# Back-compat alias used by the streaming endpoint below.
+def _cached_webm_for(src: Path) -> Path:
+    return _cached_video_for(src)
+
+
+def _start_video_transcode(participant_id: str, src: Path, dst: Path) -> None:
+    """Run ffmpeg in a thread to fully transcode src -> dst (MP4/H.264).
+    Updates _VIDEO_PREP_STATE so the prepare endpoint can report progress."""
+    import subprocess as _sp
+
+    def _run():
+        with _VIDEO_PREP_LOCK:
+            _VIDEO_PREP_STATE[participant_id] = {"status": "preparing", "progress": 0, "error": None}
+        tmp_dst = dst.with_suffix(".mp4.partial")
+        try:
+            tmp_dst.parent.mkdir(parents=True, exist_ok=True)
+            cmd = [
+                "ffmpeg", "-y",
+                "-i", str(src),
+                "-c:v", "libx264", "-preset", "veryfast", "-crf", "26",
+                "-pix_fmt", "yuv420p",
+                "-movflags", "+faststart",  # moves moov atom to the start → instant playable
+                "-c:a", "aac", "-b:a", "96k",
+                "-f", "mp4",
+                str(tmp_dst),
+            ]
+            proc = _sp.run(cmd, stdout=_sp.DEVNULL, stderr=_sp.DEVNULL)
+            if proc.returncode != 0 or not tmp_dst.exists() or tmp_dst.stat().st_size == 0:
+                raise RuntimeError(f"ffmpeg exit {proc.returncode}")
+            tmp_dst.replace(dst)
+            with _VIDEO_PREP_LOCK:
+                _VIDEO_PREP_STATE[participant_id] = {"status": "ready", "progress": 100, "error": None}
+            _logger.info("video prepared for %s -> %s", participant_id, dst)
+        except Exception as exc:
+            _logger.warning("video transcode failed for %s: %s", participant_id, exc)
+            try: tmp_dst.unlink(missing_ok=True)
+            except Exception: pass
+            with _VIDEO_PREP_LOCK:
+                _VIDEO_PREP_STATE[participant_id] = {"status": "error", "progress": 0, "error": str(exc)}
+
+    threading.Thread(target=_run, daemon=True).start()
+
+
+def _existing_cached_video(src: Path) -> Optional[Path]:
+    """Return whichever pre-transcoded cache file exists (mp4 preferred, webm fallback)."""
+    for ext in (".mp4", ".webm"):
+        p = src.with_suffix(ext)
+        if p.exists() and p.stat().st_size > 0:
+            return p
+    return None
+
+
+@app.post("/api/media/video/{participant_id}/prepare")
+async def media_video_prepare(participant_id: str, project_id: str = ""):
+    """Ensure a pre-transcoded MP4 exists for this participant's video so the
+    browser can seek natively without re-spawning ffmpeg per seek. Returns immediately
+    with status=ready if cache exists, or status=preparing while a background thread
+    runs the transcode."""
+    src = _video_source_for(participant_id)
+    if src is None:
+        raise HTTPException(404, "No video found for participant")
+
+    if _existing_cached_video(src) is not None:
+        return {"status": "ready", "cached": True}
+
+    # Native browser-friendly source — no transcode needed
+    if src.suffix.lower() in (".mp4", ".webm") and src.exists():
+        return {"status": "ready", "cached": False, "native": True}
+
+    if not src.exists():
+        raise HTTPException(404, f"Video source file missing: {src}")
+
+    with _VIDEO_PREP_LOCK:
+        existing = _VIDEO_PREP_STATE.get(participant_id)
+    if existing and existing.get("status") == "preparing":
+        return existing
+
+    _start_video_transcode(participant_id, src, _cached_video_for(src))
+    with _VIDEO_PREP_LOCK:
+        return _VIDEO_PREP_STATE.get(participant_id, {"status": "preparing"})
+
+
+@app.get("/api/media/video/{participant_id}/prepare")
+async def media_video_prepare_status(participant_id: str, project_id: str = ""):
+    src = _video_source_for(participant_id)
+    if src is None:
+        raise HTTPException(404, "No video found for participant")
+    if _existing_cached_video(src) is not None:
+        return {"status": "ready", "cached": True}
+    if src.suffix.lower() in (".mp4", ".webm") and src.exists():
+        return {"status": "ready", "cached": False, "native": True}
+    with _VIDEO_PREP_LOCK:
+        st = _VIDEO_PREP_STATE.get(participant_id)
+    if st: return st
+    return {"status": "idle"}
+
+
+def _video_response(path: Path) -> FileResponse:
+    suffix = path.suffix.lower()
+    media_type = {
+        ".mp4": "video/mp4",
+        ".webm": "video/webm",
+        ".ogv": "video/ogg",
+    }.get(suffix, "application/octet-stream")
+    return FileResponse(str(path), media_type=media_type, headers={
+        "Accept-Ranges": "bytes",
+        "Cache-Control": "no-cache",
+    })
+
+
+@app.get("/api/media/video/{participant_id}")
+async def media_video(participant_id: str, t: float = 0.0, project_id: str = ""):
+    """Serve the participant's video for playback. If a cached MP4/WebM exists it's
+    served directly with full Range support (native scrubbing in <video>). Otherwise
+    falls back to an on-the-fly transcode stream from offset ?t= (no seek possible
+    mid-stream). Callers should POST /prepare first to build the cache."""
+    src = _video_source_for(participant_id)
+    if src is None:
+        raise HTTPException(404, "No video found for participant")
+
+    cached = _existing_cached_video(src)
+    if cached is not None:
+        return _video_response(cached)
+
+    if not src.exists():
+        raise HTTPException(404, f"Video file not found: {src}")
+
+    # Native browser-compatible source — serve directly
+    if src.suffix.lower() in (".mp4", ".webm"):
+        return _video_response(src)
 
     # OGV/Theora: transcode on-the-fly to VP8 WebM so Chrome/Edge can play it.
     # -ss before -i enables fast stream seek (key-frame seek in Theora).

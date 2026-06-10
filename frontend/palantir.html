@@ -4,8 +4,6 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>SANN — Threat Intelligence</title>
-<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/asciinema-player@3.7.0/dist/bundle/asciinema-player.min.css">
-<script src="https://cdn.jsdelivr.net/npm/asciinema-player@3.7.0/dist/bundle/asciinema-player.min.js"></script>
 <style>
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -167,30 +165,10 @@ label.tb-label { color: var(--text-dim); font-size: 11px; white-space: nowrap; }
   object-fit: contain; display: block;
   background: #000;
 }
-#cast-wrap {
-  width: 100%; height: 100%;
-  display: none;
-  align-items: center; justify-content: center;
-  background: #000;
-}
-#cast-wrap .asciinema-player-theme-asciinema { background: #000 !important; }
 #no-media {
   color: var(--text-dim); font-size: 14px; text-align: center;
   display: flex; flex-direction: column; gap: 8px; align-items: center;
 }
-
-/* media-type toggle pills */
-#media-type-bar {
-  display: flex; gap: 6px; padding: 4px 8px;
-  border-bottom: 1px solid var(--border);
-  background: var(--bg2); flex-shrink: 0;
-}
-.media-pill {
-  padding: 2px 10px; border-radius: 10px; font-size: 10px; cursor: pointer;
-  border: 1px solid var(--border); color: var(--text-dim);
-  background: transparent; transition: all 0.15s;
-}
-.media-pill.active { background: var(--accent); color: #fff; border-color: var(--accent2); }
 
 /* ── PHASE BAR ── */
 #phase-bar {
@@ -312,9 +290,6 @@ label.tb-label { color: var(--text-dim); font-size: 11px; white-space: nowrap; }
   <label class="tb-label">PARTICIPANT</label>
   <select id="sel-participant"><option value="">-- select --</option></select>
 
-  <label class="tb-label">CAST</label>
-  <select id="sel-cast"><option value="">-- video --</option></select>
-
   <span class="tb-sep">|</span>
 
   <button class="tb-btn" id="btn-step-back" title="Step back 10s">&#9664;&#9664;</button>
@@ -385,25 +360,16 @@ label.tb-label { color: var(--text-dim); font-size: 11px; white-space: nowrap; }
 
   <!-- CENTER: VIDEO -->
   <div id="center-col">
-    <div id="media-type-bar">
-      <button class="media-pill active" data-mode="video">VIDEO</button>
-      <button class="media-pill" data-mode="cast">TERMINAL CAST</button>
-    </div>
     <div id="media-area">
-      <!-- video mode -->
       <video id="vid-el" preload="metadata" controls></video>
-      <!-- cast mode -->
-      <div id="cast-wrap"></div>
-      <!-- no media placeholder -->
       <div id="no-media" style="display:none;">
         <div style="font-size:32px;opacity:0.2;">&#9632;</div>
         <div>SELECT PARTICIPANT TO BEGIN</div>
       </div>
-      <!-- video transcoding overlay -->
       <div id="vid-loading" style="display:none;position:absolute;inset:0;background:rgba(0,0,0,0.85);align-items:center;justify-content:center;flex-direction:column;gap:10px;color:#0ff;font-size:13px;letter-spacing:1px;">
-        <div style="font-size:22px;">⟳</div>
-        <div>TRANSCODING FOR BROWSER COMPATIBILITY…</div>
-        <div style="font-size:11px;opacity:0.6;">OGV/Theora → VP8 WebM via ffmpeg</div>
+        <div class="spinner" style="margin-bottom:4px;"></div>
+        <div id="vid-loading-title">PREPARING VIDEO…</div>
+        <div id="vid-loading-sub" style="font-size:11px;opacity:0.6;">Transcoding to WebM (one time, cached)</div>
       </div>
     </div>
   </div><!-- /center-col -->
@@ -497,23 +463,24 @@ label.tb-label { color: var(--text-dim); font-size: 11px; white-space: nowrap; }
 const S = {
   projectId: '',           // active project_id ('' = default/main DB)
   participantId: null,
-  videoMedia: null,        // media_registry row for video
-  casts: [],               // array of cast media rows
-  activeCastIdx: 0,
-  castPlayer: null,        // asciinema player instance
-  cursorEpoch: 0,          // current cursor position as Unix float
+  videoMedia: null,        // media_registry row for video (used for time range only)
+  casts: [],               // cast media rows (used for time range + media-range bars only)
+  videoStart: 0,           // epoch — start of the video file
+  videoEnd: 0,             // epoch — start + duration_seconds
+  videoReady: false,       // true once <video> can play the cached webm
+  videoPrepStatus: 'idle', // 'idle' | 'preparing' | 'ready' | 'error'
+  videoPrepPoll: null,     // setInterval handle while polling /prepare
+  cursorEpoch: 0,          // current cursor position as Unix epoch float
   globalStart: 0,          // earliest epoch across all media
   globalEnd: 0,            // latest epoch
   windowSec: 120,
   playing: false,
-  dragging: false,
-  playInterval: null,
+  dragging: false,         // scrubber drag in progress
+  fetchTimer: null,        // debounce handle for panel fetch
   lastFetchEpoch: 0,
   heatBuckets: [],         // from /api/timeline/phases
-  phaseStart: 0,           // epoch of phase data start (may span months)
-  phaseEnd: 0,             // epoch of phase data end
-  mediaMode: 'video',      // 'video' | 'cast'
-  videoStreamT: 0,         // seek offset (seconds) the current stream was started at
+  phaseStart: 0,
+  phaseEnd: 0,
 };
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -639,74 +606,28 @@ async function init() {
   hideLoading();
 
   selProject.addEventListener('change', async () => {
-    // Teardown active media before switching project
-    const vid = document.getElementById('vid-el');
-    vid.pause();
-    vid.removeAttribute('src');
-    vid.load();
-    if (S.castPlayer) { try { S.castPlayer.dispose(); } catch(e) {} S.castPlayer = null; }
-    document.getElementById('vid-loading').style.display = 'none';
-    vid.style.display = 'none';
-    document.getElementById('cast-wrap').innerHTML = '';
-    // Reset all state
-    S.participantId = null;
-    S.videoMedia = null;
-    S.casts = [];
-    S.activeCastIdx = 0;
-    S.cursorEpoch = 0;
-    S.globalStart = 0; S.globalEnd = 0;
-    S.lastFetchEpoch = 0;
-    S.heatBuckets = [];
-    S.phaseStart = 0; S.phaseEnd = 0;
-    S.videoStreamT = 0;
-    S.playing = false;
-    clearInterval(S.playInterval);
-    const ppBtn = document.getElementById('btn-playpause');
-    ppBtn.textContent = '▶'; ppBtn.classList.remove('playing');
+    teardownVideo();
+    resetParticipantState();
     clearAllPanels();
     drawTimeline();
     await reloadParticipants();
     showNoMedia();
   });
 
-  const sel = selPart;
-  sel.addEventListener('change', () => {
-    if (!sel.value) return;
-    // Clean up previous participant media
-    const vid = document.getElementById('vid-el');
-    vid.pause();
-    vid.removeAttribute('src');
-    vid.load();
-    if (S.castPlayer) { try { S.castPlayer.dispose(); } catch(e) {} S.castPlayer = null; }
-    document.getElementById('vid-loading').style.display = 'none';
-    document.getElementById('cast-wrap').innerHTML = '';
-    S.playing = false;
-    S.lastFetchEpoch = 0;
-    S.activeCastIdx = 0;
-    S.videoStreamT = 0;
-    const ppBtn = document.getElementById('btn-playpause');
-    ppBtn.textContent = '▶'; ppBtn.classList.remove('playing');
-    clearInterval(S.playInterval);
+  selPart.addEventListener('change', () => {
+    if (!selPart.value) return;
+    teardownVideo();
+    resetParticipantState();
     clearAllPanels();
-    loadParticipant(sel.value);
+    loadParticipant(selPart.value);
   });
-  document.getElementById('sel-cast').addEventListener('change', switchCast);
+
   document.getElementById('btn-playpause').addEventListener('click', togglePlay);
   document.getElementById('btn-step-back').addEventListener('click', () => stepBy(-10));
   document.getElementById('btn-step-fwd').addEventListener('click', () => stepBy(10));
   document.getElementById('sel-window').addEventListener('change', e => {
     S.windowSec = parseInt(e.target.value);
     fetchAllPanels();
-  });
-
-  // media mode pills
-  document.querySelectorAll('.media-pill').forEach(btn => {
-    btn.addEventListener('click', () => {
-      document.querySelectorAll('.media-pill').forEach(b => b.classList.remove('active'));
-      btn.classList.add('active');
-      S.mediaMode = btn.dataset.mode;
-      renderMediaMode();
-    });
   });
 
   // scrubber
@@ -722,16 +643,50 @@ async function init() {
     if (!row) return;
     const epoch = parseFloat(row.dataset.epoch);
     if (!isFinite(epoch)) return;
-    moveCursorTo(epoch, true);
+    moveCursorTo(epoch);
   });
 
-  // clock
-  setInterval(updateClock, 1000);
+  // keyboard shortcuts: space=play/pause, ←/→=step 5s, shift+←/→=step 30s
+  window.addEventListener('keydown', e => {
+    if (['INPUT','TEXTAREA','SELECT'].includes(e.target.tagName)) return;
+    if (e.code === 'Space')      { e.preventDefault(); togglePlay(); }
+    else if (e.code === 'ArrowLeft')  { e.preventDefault(); stepBy(e.shiftKey ? -30 : -5); }
+    else if (e.code === 'ArrowRight') { e.preventDefault(); stepBy(e.shiftKey ?  30 :  5); }
+  });
 
-  // resize
-  window.addEventListener('resize', () => { drawTimeline(); resizeCastPlayer(); });
+  setInterval(updateClock, 1000);
+  window.addEventListener('resize', drawTimeline);
 
   showNoMedia();
+}
+
+function teardownVideo() {
+  const vid = document.getElementById('vid-el');
+  try { vid.pause(); } catch(e) {}
+  vid.removeAttribute('src');
+  try { vid.load(); } catch(e) {}
+  vid.style.display = 'none';
+  vid.onplay = vid.onpause = vid.ontimeupdate = vid.onseeked =
+    vid.onerror = vid.oncanplay = vid.onloadedmetadata = null;
+  hideVideoOverlay();
+  if (S.videoPrepPoll) { clearInterval(S.videoPrepPoll); S.videoPrepPoll = null; }
+  if (S.fetchTimer) { clearTimeout(S.fetchTimer); S.fetchTimer = null; }
+  S.videoReady = false;
+  S.videoPrepStatus = 'idle';
+  S.playing = false;
+  updatePlayBtn();
+}
+
+function resetParticipantState() {
+  S.participantId = null;
+  S.videoMedia = null;
+  S.videoStart = 0; S.videoEnd = 0;
+  S.casts = [];
+  S.cursorEpoch = 0;
+  S.globalStart = 0; S.globalEnd = 0;
+  S.lastFetchEpoch = 0;
+  S.heatBuckets = [];
+  S.phaseStart = 0; S.phaseEnd = 0;
 }
 
 function setLoading(msg) {
@@ -755,35 +710,21 @@ async function loadParticipant(pid) {
   S.participantId = pid;
   setLoading('LOADING MEDIA...');
 
-  // 1. Load media list
   const projQs = S.projectId ? `&project_id=${S.projectId}` : '';
-  const mResp = await fetch(`/api/media/list?participant_id=${pid}${projQs}`).catch(() => null);
-  const mData = mResp ? await mResp.json() : {};
-  const media = mData.media || [];
 
-  // 2. Find video
+  // 1. Load media list (video + casts contribute to the timeline range)
+  const mResp = await fetch(`/api/media/list?participant_id=${encodeURIComponent(pid)}${projQs}`).catch(() => null);
+  const media = (mResp && mResp.ok) ? ((await mResp.json()).media || []) : [];
   S.videoMedia = media.find(m => m.media_type === 'video') || null;
 
-  // 3. Load casts
-  const cResp = await fetch(`/api/media/cast_list?participant_id=${pid}${projQs}`).catch(() => null);
-  const cData = cResp ? await cResp.json() : {};
-  S.casts = cData.casts || [];
+  // 2. Load casts (for media-range bars on the scrubber; commands feed the TERMINAL panel)
+  const cResp = await fetch(`/api/media/cast_list?participant_id=${encodeURIComponent(pid)}${projQs}`).catch(() => null);
+  S.casts = (cResp && cResp.ok) ? ((await cResp.json()).casts || []) : [];
 
-  // Populate cast selector
-  const castSel = document.getElementById('sel-cast');
-  castSel.innerHTML = '<option value="">— video —</option>';
-  S.casts.forEach((c, i) => {
-    const opt = document.createElement('option');
-    opt.value = i;
-    const fname = (c.filename || c.source_file || '').split('/').pop();
-    opt.textContent = `CAST ${i+1}: ${fname}`;
-    castSel.appendChild(opt);
-  });
-
-  // 4. Compute time bounds across all media
-  const allEpochs = media.map(m => isoToEpoch(m.start_timestamp)).filter(Boolean);
-  // Only include items with a real duration — fallback to 3600 skews globalEnd
-  const allEnds   = media
+  // 3. Compute time bounds across all media
+  const allMedia = [...media, ...S.casts];
+  const allEpochs = allMedia.map(m => isoToEpoch(m.start_timestamp)).filter(Boolean);
+  const allEnds = allMedia
     .filter(m => m.duration_seconds > 0)
     .map(m => isoToEpoch(m.start_timestamp) + m.duration_seconds)
     .filter(Boolean);
@@ -795,28 +736,29 @@ async function loadParticipant(pid) {
   }
 
   S.globalStart = Math.min(...allEpochs);
-  S.globalEnd   = Math.max(...allEnds);
+  S.globalEnd = Math.max(...allEnds);
   S.cursorEpoch = S.globalStart;
 
-  // 5. Load phases heatmap
+  if (S.videoMedia) {
+    S.videoStart = isoToEpoch(S.videoMedia.start_timestamp);
+    S.videoEnd = S.videoStart + (S.videoMedia.duration_seconds || 0);
+  }
+
+  // 4. Load phase heatmap
   await loadPhases();
 
-  // 6. Load video
+  // 5. Prepare + load video (background transcode if needed, then native player)
   if (S.videoMedia) {
-    loadVideo(S.videoMedia);
+    prepareAndLoadVideo(pid);
   } else {
     showNoMedia();
   }
 
-  // 7. Draw timeline
+  // 6. Draw timeline + initial panel fetch
   drawTimeline();
   updateCursorUI();
-
-  // 8. Cursor stays at globalStart (video start) — no auto-seek to activity bucket
-  //    (auto-seek was removed: it could land in a dead zone between casts)
-
-  // 9. Fetch panels
   await fetchAllPanels();
+  S.lastFetchEpoch = S.cursorEpoch;
 
   hideLoading();
 }
@@ -842,193 +784,151 @@ async function loadPhases() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// VIDEO
+// VIDEO — prepare + load + native seek
 // ═══════════════════════════════════════════════════════════════════════════
-// Reload the video stream starting from a specific second offset.
-// OGV/Theora files are served as on-the-fly VP8 WebM streams — native seeking
-// doesn't work in a streaming response, so we reload with a new ?t= offset instead.
-function _reloadVideoStream(pid, tOffset) {
-  const vid = document.getElementById('vid-el');
-  S.videoStreamT = Math.max(0, tOffset);
-  const projQs = S.projectId ? `&project_id=${encodeURIComponent(S.projectId)}` : '';
-  const newSrc = `/api/media/video/${encodeURIComponent(pid)}?t=${S.videoStreamT}${projQs}`;
-  const loading = document.getElementById('vid-loading');
-  loading.style.display = 'flex';
-  vid.style.display = 'none';
+// Lifecycle:
+//   prepareAndLoadVideo(pid)
+//     → POST /api/media/video/{pid}/prepare       (kicks off background transcode)
+//     → if status=ready: activateVideoSource()
+//     → else: showVideoOverlay(...) + poll GET /prepare every 2s until ready or error
+//   activateVideoSource(pid)
+//     → vid.src = cached webm; native <video> seek works for the whole file
+//     → wires onplay/onpause/ontimeupdate/onseeked to drive S.playing + cursor
+//
+// State-machine rules:
+//   - When the video is playing: video.currentTime is the master clock; we read it
+//     in ontimeupdate (fires ~4×/sec) and update cursor + phase ribbon. We never
+//     write back to the video while playing.
+//   - When paused or dragging: cursor is the master; seekVideoToCursor() pushes
+//     video.currentTime to match.
+function videoEl() { return document.getElementById('vid-el'); }
 
-  function _clearVidCallbacks() {
-    vid.oncanplay = null;
-    vid.onerror = null;
-    if (window._vidLoadTimeout) { clearTimeout(window._vidLoadTimeout); window._vidLoadTimeout = null; }
-  }
-
-  vid.onerror = () => {
-    _clearVidCallbacks();
-    loading.style.display = 'none';
-    showToast('Video stream error — check that ffmpeg is installed', 'error');
-  };
-  vid.oncanplay = () => {
-    _clearVidCallbacks();
-    loading.style.display = 'none';
-    vid.style.display = 'block';
-  };
-
-  if (window._vidLoadTimeout) clearTimeout(window._vidLoadTimeout);
-  window._vidLoadTimeout = setTimeout(() => {
-    if (loading.style.display !== 'none') {
-      _clearVidCallbacks();
-      loading.style.display = 'none';
-      showToast('Video taking too long — is ffmpeg installed?', 'warning');
-    }
-  }, 30000);
-
-  vid.src = newSrc;
-  vid.load();
+function showVideoOverlay(title, sub) {
+  const ov = document.getElementById('vid-loading');
+  document.getElementById('vid-loading-title').textContent = title || 'PREPARING…';
+  document.getElementById('vid-loading-sub').textContent = sub || '';
+  ov.style.display = 'flex';
+  videoEl().style.display = 'none';
+  document.getElementById('no-media').style.display = 'none';
+}
+function hideVideoOverlay() {
+  document.getElementById('vid-loading').style.display = 'none';
 }
 
-function loadVideo(m) {
-  const pid = m.participant_id || S.participantId;
-  const vid = document.getElementById('vid-el');
-  S.videoStreamT = 0;
+async function prepareAndLoadVideo(pid) {
+  S.videoReady = false;
+  S.videoPrepStatus = 'preparing';
+  showVideoOverlay('PREPARING VIDEO…', 'Transcoding to WebM (one-time, cached on disk)');
 
-  // Compute desired offset from cursor so we start at the right point
-  const videoStart = isoToEpoch(m.start_timestamp);
-  const desiredOffset = Math.max(0, S.cursorEpoch - videoStart);
-  _reloadVideoStream(pid, desiredOffset);
-
-  vid.ontimeupdate = () => {
-    if (S.dragging || !S.playing) return;
-    const newEpoch = videoStart + S.videoStreamT + vid.currentTime;
-    if (Math.abs(newEpoch - S.cursorEpoch) > 1.5) {
-      S.cursorEpoch = newEpoch;
-      updateCursorUI();
-    }
-  };
-  vid.onseeked = () => {
-    if (S.dragging) return;
-    S.cursorEpoch = videoStart + S.videoStreamT + vid.currentTime;
-    updateCursorUI();
-    if (Math.abs(S.cursorEpoch - S.lastFetchEpoch) >= 3) {
-      S.lastFetchEpoch = S.cursorEpoch;
-      fetchAllPanels();
-    }
-  };
-
-  if (S.mediaMode === 'video') {
-    document.getElementById('cast-wrap').style.display = 'none';
-    document.getElementById('no-media').style.display = 'none';
-  }
-}
-
-function syncVideoToCursor() {
-  if (!S.videoMedia) return;
-  const vid = document.getElementById('vid-el');
-  const videoStart = isoToEpoch(S.videoMedia.start_timestamp);
-  const desiredOffset = S.cursorEpoch - videoStart;
-  if (!isFinite(desiredOffset)) return;
-
-  const clampedOffset = Math.max(0, Math.min(
-    desiredOffset,
-    S.videoMedia.duration_seconds || Infinity
-  ));
-
-  // For a streaming response the browser can't seek natively.
-  // Reload the stream if the desired position is far from where we're streaming.
-  const streamPos = S.videoStreamT + (isFinite(vid.currentTime) ? vid.currentTime : 0);
-  const delta = clampedOffset - streamPos;
-
-  if (Math.abs(delta) > 8) {
-    // Big jump — restart stream at desired position (2s pre-roll for ffmpeg key-frame)
-    _reloadVideoStream(S.participantId, Math.max(0, clampedOffset - 2));
-  } else if (delta > 0.5 && delta <= 8) {
-    // Small forward seek — try native currentTime (works if already buffered)
-    try { vid.currentTime += delta; } catch(e) {}
-  }
-  // Small backward delta (<0.5s) or negative: leave as-is to avoid reload loops
-}
-
-// ═══════════════════════════════════════════════════════════════════════════
-// CAST
-// ═══════════════════════════════════════════════════════════════════════════
-function switchCast() {
-  const sel = document.getElementById('sel-cast');
-  const idx = sel.value;
-  if (idx === '' || idx === null) {
-    S.mediaMode = 'video';
-    document.querySelectorAll('.media-pill').forEach(b => b.classList.toggle('active', b.dataset.mode === 'video'));
-    renderMediaMode();
+  const projQs = S.projectId ? `?project_id=${S.projectId}` : '';
+  let resp;
+  try {
+    resp = await fetch(`/api/media/video/${encodeURIComponent(pid)}/prepare${projQs}`, { method: 'POST' });
+  } catch (e) {
+    hideVideoOverlay();
+    showToast('Network error preparing video', 'error');
+    S.videoPrepStatus = 'error';
     return;
   }
-  S.activeCastIdx = parseInt(idx);
-  S.mediaMode = 'cast';
-  document.querySelectorAll('.media-pill').forEach(b => b.classList.toggle('active', b.dataset.mode === 'cast'));
-  renderMediaMode();
-  loadCast(S.activeCastIdx);
-}
-
-function loadCast(idx) {
-  const cast = S.casts[idx];
-  if (!cast) return;
-  if (S.castPlayer) { try { S.castPlayer.dispose(); } catch(e) {} S.castPlayer = null; }
-  const wrap = document.getElementById('cast-wrap');
-  wrap.innerHTML = '';
-
-  const mediaId = cast.media_id;
-  const projQs = S.projectId ? `?project_id=${encodeURIComponent(S.projectId)}` : '';
-  const url = `/api/media/cast_raw/${encodeURIComponent(mediaId)}${projQs}`;
-  S.castPlayer = AsciinemaPlayer.create(url, wrap, {
-    autoPlay: false,
-    loop: false,
-    preload: true,
-    theme: 'asciinema',
-    fit: 'both',
-    terminalFontSize: '11px',
-  });
-  // Seek after player has had time to initialize (preload is async)
-  setTimeout(() => syncCastToCursor(), 800);
-}
-
-function syncCastToCursor() {
-  if (!S.castPlayer || !S.casts.length) return;
-  const cast = S.casts[S.activeCastIdx];
-  if (!cast) return;
-  const castStart = isoToEpoch(cast.start_timestamp);
-  const offset = S.cursorEpoch - castStart;
-  if (offset >= 0 && isFinite(offset)) {
-    try { S.castPlayer.seek(offset); } catch(e) {}
+  if (!resp.ok) {
+    hideVideoOverlay();
+    const err = await resp.json().catch(() => ({}));
+    showToast('Video prepare failed: ' + (err.detail || resp.status), 'error');
+    S.videoPrepStatus = 'error';
+    return;
   }
+  const d = await resp.json();
+  if (d.status === 'ready') {
+    activateVideoSource(pid);
+    return;
+  }
+
+  // Poll until ready or error
+  if (S.videoPrepPoll) clearInterval(S.videoPrepPoll);
+  S.videoPrepPoll = setInterval(async () => {
+    try {
+      const r = await fetch(`/api/media/video/${encodeURIComponent(pid)}/prepare${projQs}`);
+      if (!r.ok) return;
+      const dd = await r.json();
+      if (dd.status === 'ready') {
+        clearInterval(S.videoPrepPoll); S.videoPrepPoll = null;
+        activateVideoSource(pid);
+      } else if (dd.status === 'error') {
+        clearInterval(S.videoPrepPoll); S.videoPrepPoll = null;
+        hideVideoOverlay();
+        showToast('Video transcode failed: ' + (dd.error || ''), 'error');
+        S.videoPrepStatus = 'error';
+      }
+    } catch (e) { /* keep polling */ }
+  }, 2000);
 }
 
-// ═══════════════════════════════════════════════════════════════════════════
-// MEDIA MODE RENDER
-// ═══════════════════════════════════════════════════════════════════════════
-function renderMediaMode() {
-  const vid = document.getElementById('vid-el');
-  const castWrap = document.getElementById('cast-wrap');
-  const noMedia = document.getElementById('no-media');
-  const loading = document.getElementById('vid-loading');
+function activateVideoSource(pid) {
+  const vid = videoEl();
+  const projQs = S.projectId ? `?project_id=${S.projectId}` : '';
+  vid.src = `/api/media/video/${encodeURIComponent(pid)}${projQs}`;
+  vid.load();
 
-  if (S.mediaMode === 'video') {
-    loading.style.display = 'none';
-    vid.style.display = S.videoMedia ? 'block' : 'none';
-    castWrap.style.display = 'none';
-    noMedia.style.display = S.videoMedia ? 'none' : 'flex';
-    if (S.videoMedia) syncVideoToCursor();
-  } else {
-    loading.style.display = 'none';
-    vid.style.display = 'none';
-    castWrap.style.display = S.casts.length ? 'flex' : 'none';
-    noMedia.style.display = S.casts.length ? 'none' : 'flex';
-    if (S.casts.length) {
-      if (!S.castPlayer) loadCast(S.activeCastIdx);
-      else syncCastToCursor();
+  vid.onloadedmetadata = () => {
+    hideVideoOverlay();
+    vid.style.display = 'block';
+    S.videoReady = true;
+    S.videoPrepStatus = 'ready';
+    seekVideoToCursor();
+  };
+  vid.onerror = () => {
+    hideVideoOverlay();
+    showToast('Video element error — file may be corrupt', 'error');
+    S.videoPrepStatus = 'error';
+  };
+
+  // While playing the video is the master clock — it drives cursor & panels.
+  vid.ontimeupdate = () => {
+    if (!S.playing || S.dragging) return;
+    const newCursor = S.videoStart + vid.currentTime;
+    if (newCursor >= S.globalStart && newCursor <= S.globalEnd) {
+      S.cursorEpoch = newCursor;
+      updateCursorUI();
+      if (Math.abs(S.cursorEpoch - S.lastFetchEpoch) >= 5) {
+        S.lastFetchEpoch = S.cursorEpoch;
+        schedulePanelFetch(0);
+      }
     }
+  };
+  // A seek (programmatic or via native controls) is authoritative — sync cursor.
+  vid.onseeked = () => {
+    if (S.dragging) return;
+    const newCursor = S.videoStart + vid.currentTime;
+    if (Math.abs(newCursor - S.cursorEpoch) < 0.25) return;
+    S.cursorEpoch = Math.max(S.globalStart, Math.min(S.globalEnd, newCursor));
+    updateCursorUI();
+    schedulePanelFetch(200);
+  };
+  vid.onplay = () => {
+    S.playing = true;
+    updatePlayBtn();
+  };
+  vid.onpause = () => {
+    S.playing = false;
+    updatePlayBtn();
+    schedulePanelFetch(0);
+  };
+}
+
+function seekVideoToCursor() {
+  if (!S.videoReady) return;
+  const vid = videoEl();
+  const dur = vid.duration || (S.videoEnd - S.videoStart);
+  if (!isFinite(dur) || dur <= 0) return;
+  const off = Math.max(0, Math.min(dur, S.cursorEpoch - S.videoStart));
+  if (Math.abs(vid.currentTime - off) > 0.4) {
+    try { vid.currentTime = off; } catch(e) {}
   }
 }
 
 function showNoMedia() {
-  document.getElementById('vid-el').style.display = 'none';
-  document.getElementById('cast-wrap').style.display = 'none';
+  videoEl().style.display = 'none';
+  hideVideoOverlay();
   document.getElementById('no-media').style.display = 'flex';
 }
 
@@ -1043,74 +943,43 @@ function clearAllPanels() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// PLAYBACK CONTROL
+// PLAYBACK
 // ═══════════════════════════════════════════════════════════════════════════
-function togglePlay() {
-  S.playing = !S.playing;
+function updatePlayBtn() {
   const btn = document.getElementById('btn-playpause');
+  btn.textContent = S.playing ? '⏸' : '▶';
+  btn.classList.toggle('playing', S.playing);
+}
 
-  if (S.playing) {
-    btn.textContent = '⏸';
-    btn.classList.add('playing');
-
-    // sync media position to current cursor before starting playback
-    syncVideoToCursor();
-
-    // play video or cast
-    if (S.mediaMode === 'video' && S.videoMedia) {
-      document.getElementById('vid-el').play().catch(() => {});
-    } else if (S.mediaMode === 'cast' && S.castPlayer) {
-      try { S.castPlayer.play(); } catch(e) {}
-    }
-
-    // master ticker: advance cursor epoch from video or cast time
-    S.playInterval = setInterval(() => {
-      if (!S.playing) return;
-      if (S.mediaMode === 'video' && S.videoMedia) {
-        const vid = document.getElementById('vid-el');
-        const videoStart = isoToEpoch(S.videoMedia.start_timestamp);
-        S.cursorEpoch = videoStart + S.videoStreamT + vid.currentTime;
-      } else if (S.mediaMode === 'cast' && S.castPlayer && S.casts[S.activeCastIdx]) {
-        try {
-          const castT = typeof S.castPlayer.getCurrentTime === 'function'
-            ? S.castPlayer.getCurrentTime()
-            : (S.castPlayer.currentTime ?? 0);
-          const castStart = isoToEpoch(S.casts[S.activeCastIdx].start_timestamp);
-          S.cursorEpoch = castStart + castT;
-        } catch(e) { S.cursorEpoch += 0.25; }
-      } else {
-        S.cursorEpoch += 0.25;
-      }
-      updateCursorUI();
-      // Fetch panels every ~5s of video time (debounced, not modulo-aligned)
-      if (Math.abs(S.cursorEpoch - S.lastFetchEpoch) >= 5) {
-        S.lastFetchEpoch = S.cursorEpoch;
-        fetchAllPanels();
-      }
-    }, 250);
-
+function togglePlay() {
+  const vid = videoEl();
+  if (!S.videoReady) return;
+  if (vid.paused) {
+    seekVideoToCursor();          // make sure we start from current cursor
+    vid.play().catch(() => {});
   } else {
-    btn.textContent = '▶';
-    btn.classList.remove('playing');
-    clearInterval(S.playInterval);
-
-    if (S.mediaMode === 'video') {
-      document.getElementById('vid-el').pause();
-    } else if (S.castPlayer) {
-      try { S.castPlayer.pause(); } catch(e) {}
-    }
-
-    fetchAllPanels();
+    vid.pause();
   }
 }
 
 function stepBy(secs) {
-  S.cursorEpoch += secs;
-  S.cursorEpoch = Math.max(S.globalStart, Math.min(S.globalEnd, S.cursorEpoch));
-  syncVideoToCursor();
-  if (!S.dragging) syncCastToCursor();
+  const newCursor = S.cursorEpoch + secs;
+  S.cursorEpoch = Math.max(S.globalStart, Math.min(S.globalEnd, newCursor));
   updateCursorUI();
-  fetchAllPanels();
+  seekVideoToCursor();
+  schedulePanelFetch(150);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// PANEL FETCH — debounced so a drag doesn't fire 100 requests
+// ═══════════════════════════════════════════════════════════════════════════
+function schedulePanelFetch(delay) {
+  if (S.fetchTimer) clearTimeout(S.fetchTimer);
+  S.fetchTimer = setTimeout(() => {
+    S.fetchTimer = null;
+    S.lastFetchEpoch = S.cursorEpoch;
+    fetchAllPanels();
+  }, Math.max(0, delay || 250));
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1128,44 +997,52 @@ function epochToScrubberPct(epoch) {
   return (epoch - S.globalStart) / (S.globalEnd - S.globalStart);
 }
 
+// Drag: only updates cursor visual & ribbon — no media seek, no panel fetch.
+// On mouseup: seek video natively + single panel fetch.
 function onScrubberDown(e) {
   if (e.target.id === 'cursor-line' || e.target.id === 'cursor-tri') return;
   S.dragging = true;
-  moveCursorTo(scrubberPosToEpoch(e.clientX), false);
+  S.cursorEpoch = scrubberPosToEpoch(e.clientX);
+  updateCursorUI();
 }
 function onScrubberMove(e) {
   if (!S.dragging) return;
-  moveCursorTo(scrubberPosToEpoch(e.clientX), false);
+  S.cursorEpoch = scrubberPosToEpoch(e.clientX);
+  updateCursorUI();
 }
 function onScrubberUp(e) {
   if (!S.dragging) return;
   S.dragging = false;
-  moveCursorTo(scrubberPosToEpoch(e.clientX), true);
+  S.cursorEpoch = scrubberPosToEpoch(e.clientX);
+  updateCursorUI();
+  seekVideoToCursor();
+  schedulePanelFetch(150);
 }
 function onScrubberClick(e) {
   if (S.dragging) return;
-  moveCursorTo(scrubberPosToEpoch(e.clientX), true);
+  S.cursorEpoch = scrubberPosToEpoch(e.clientX);
+  updateCursorUI();
+  seekVideoToCursor();
+  schedulePanelFetch(150);
 }
 
-function moveCursorTo(epoch, full) {
+function moveCursorTo(epoch) {
   S.cursorEpoch = Math.max(S.globalStart, Math.min(S.globalEnd, epoch));
   updateCursorUI();
-  if (full) {
-    S.lastFetchEpoch = S.cursorEpoch;
-    syncVideoToCursor();
-    syncCastToCursor();
-    fetchAllPanels();
-  }
+  seekVideoToCursor();
+  schedulePanelFetch(150);
 }
 
 function updateCursorUI() {
   const pct = epochToScrubberPct(S.cursorEpoch);
   const cl = document.getElementById('cursor-line');
-  cl.style.left = (pct * 100).toFixed(3) + '%';
+  if (cl) cl.style.left = (pct * 100).toFixed(3) + '%';
 
   const ts = epochToUTC(S.cursorEpoch);
-  document.getElementById('tb-cursor-ts').textContent = ts;
-  document.getElementById('tl-cursor-label').textContent = ts;
+  const tb = document.getElementById('tb-cursor-ts');
+  const tl = document.getElementById('tl-cursor-label');
+  if (tb) tb.textContent = ts;
+  if (tl) tl.textContent = ts;
 
   updatePhaseBadge();
 }
