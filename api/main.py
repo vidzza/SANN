@@ -258,7 +258,8 @@ def get_con() -> sqlite3.Connection:
 
 
 def get_project_con(project_id: str = "") -> sqlite3.Connection:
-    """Return connection to project DB if project_id given and DB exists, else main DB."""
+    """Return connection to project DB if project_id given and DB exists, else main DB.
+    Raises 404 if project_id is given but does not exist (prevents cross-project leaks)."""
     if project_id:
         try:
             con = sqlite3.connect(str(DB_PATH))
@@ -268,8 +269,11 @@ def get_project_con(project_id: str = "") -> sqlite3.Connection:
                 pc = sqlite3.connect(row[0])
                 pc.row_factory = sqlite3.Row
                 return pc
+            raise HTTPException(404, f"Project not found: {project_id}")
+        except HTTPException:
+            raise
         except Exception:
-            pass
+            raise HTTPException(500, f"Database error accessing project {project_id}")
     return get_con()
 
 
@@ -1458,6 +1462,8 @@ def delete_project(project_id: str):
         raise HTTPException(404, "Project not found")
     db_path_str = row["db_path"]
     con.execute("DELETE FROM projects WHERE project_id=?", (project_id,))
+    con.execute("DELETE FROM events WHERE project_id=?", (project_id,))
+    con.execute("DELETE FROM media_registry WHERE project_id=?", (project_id,))
     con.commit()
     con.close()
     if db_path_str:
