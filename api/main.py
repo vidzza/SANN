@@ -104,6 +104,127 @@ async def _bootstrap_db():
 
 
 # ---------------------------------------------------------------------------
+# Media discovery helpers
+# ---------------------------------------------------------------------------
+
+import hashlib as _hashlib
+import subprocess as _subprocess
+
+def _stable_id(s: str) -> str:
+    return _hashlib.sha1(s.encode()).hexdigest()[:8]
+
+def _unix_to_iso(ts: float) -> str:
+    return datetime.fromtimestamp(ts, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
+
+def _cast_header_ts(cast_path: Path) -> Optional[float]:
+    try:
+        with cast_path.open() as f:
+            hdr = json.loads(f.readline())
+        return float(hdr.get('timestamp') or 0) or None
+    except Exception:
+        return None
+
+def _cast_duration(cast_path: Path) -> float:
+    last = 0.0
+    try:
+        with cast_path.open() as f:
+            f.readline()  # skip header
+            for line in f:
+                try:
+                    row = json.loads(line)
+                    if isinstance(row, list) and len(row) >= 1:
+                        last = max(last, float(row[0]))
+                except Exception:
+                    pass
+    except Exception:
+        pass
+    return last
+
+def _video_duration(video_path: Path) -> Optional[float]:
+    try:
+        out = _subprocess.check_output(
+            ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+             "-of", "default=noprint_wrappers=1:nokey=1", str(video_path)],
+            stderr=_subprocess.DEVNULL, timeout=15
+        )
+        return float(out.strip())
+    except Exception:
+        return None
+
+def _discover_media(data_root: Path, participants: list) -> list:
+    """Return list of media_registry row dicts for given participants under data_root."""
+    rows = []
+    for pid, scenario in participants:
+        pid_dir = data_root / pid
+        if not pid_dir.exists():
+            continue
+
+        cast_entries = []
+        for c in sorted(pid_dir.rglob('*.cast')):
+            ts = _cast_header_ts(c)
+            if ts:
+                cast_entries.append((c, ts, _cast_duration(c), c.parent.name))
+
+        # video
+        video_candidates = list(pid_dir.rglob('recording.webm')) + list(pid_dir.rglob('recording.ogv'))
+        video_file = video_candidates[0] if video_candidates else None
+
+        if video_file:
+            video_start = min(e[1] for e in cast_entries) if cast_entries else video_file.stat().st_mtime
+            video_dur = _video_duration(video_file)
+            if video_dur is None:
+                video_dur = max((e[1] + e[2]) - video_start for e in cast_entries) if cast_entries else 0
+            rows.append({
+                'media_id':        _stable_id(pid + ':video'),
+                'participant_id':  pid,
+                'scenario_name':   scenario,
+                'media_type':      'video',
+                'source_file':     str(video_file),
+                'source_host':     video_file.parent.name,
+                'start_timestamp': _unix_to_iso(video_start),
+                'start_unix':      video_start,
+                'end_timestamp':   _unix_to_iso(video_start + video_dur),
+                'end_unix':        video_start + video_dur,
+                'duration_seconds': video_dur,
+                'panel':           'video',
+            })
+
+        for c, ts, dur, host in cast_entries:
+            rows.append({
+                'media_id':        _stable_id(pid + ':cast:' + c.name),
+                'participant_id':  pid,
+                'scenario_name':   scenario,
+                'media_type':      'terminal',
+                'source_file':     str(c),
+                'source_host':     host,
+                'start_timestamp': _unix_to_iso(ts),
+                'start_unix':      ts,
+                'end_timestamp':   _unix_to_iso(ts + dur),
+                'end_unix':        ts + dur,
+                'duration_seconds': dur,
+                'panel':           'terminal',
+            })
+    return rows
+
+
+def _write_media_rows(rows: list):
+    """Insert/replace media rows into the main DB's media_registry."""
+    if not rows:
+        return
+    con = sqlite3.connect(str(DB_PATH))
+    con.executemany("""
+        INSERT OR REPLACE INTO media_registry
+        (media_id, participant_id, scenario_name, media_type, source_file, source_host,
+         start_timestamp, start_unix, end_timestamp, end_unix, duration_seconds, panel)
+        VALUES (:media_id, :participant_id, :scenario_name, :media_type, :source_file,
+                :source_host, :start_timestamp, :start_unix, :end_timestamp, :end_unix,
+                :duration_seconds, :panel)
+    """, rows)
+    con.commit()
+    con.close()
+
+
+# ---------------------------------------------------------------------------
 # DB helper
 # ---------------------------------------------------------------------------
 
@@ -212,9 +333,9 @@ async def get_participants(project_id: str = ""):
 
 
 @app.get("/api/participants/{participant_id}")
-async def get_participant(participant_id: str):
+async def get_participant(participant_id: str, project_id: str = ""):
     """Full detail for one participant."""
-    base = q("""
+    base = qp(project_id, """
         SELECT
             participant_id, scenario_name,
             COUNT(*) as total_events,
@@ -234,7 +355,7 @@ async def get_participant(participant_id: str):
 
     result = base[0]
 
-    result["phases"] = q("""
+    result["phases"] = qp(project_id, """
         SELECT attack_phase, mitre_tactic, COUNT(*) as n
         FROM events
         WHERE participant_id = ?
@@ -242,7 +363,7 @@ async def get_participant(participant_id: str):
         ORDER BY n DESC
     """, (participant_id,))
 
-    result["hosts"] = q("""
+    result["hosts"] = qp(project_id, """
         SELECT source_host, COUNT(*) as n
         FROM events
         WHERE participant_id = ?
@@ -250,7 +371,7 @@ async def get_participant(participant_id: str):
         ORDER BY n DESC
     """, (participant_id,))
 
-    result["users"] = q("""
+    result["users"] = qp(project_id, """
         SELECT user, COUNT(*) as n
         FROM events
         WHERE participant_id = ? AND user != '' AND user IS NOT NULL
@@ -259,7 +380,7 @@ async def get_participant(participant_id: str):
         LIMIT 20
     """, (participant_id,))
 
-    result["top_tools"] = q("""
+    result["top_tools"] = qp(project_id, """
         SELECT tool, COUNT(*) as n
         FROM events
         WHERE participant_id = ? AND tool != '' AND tool IS NOT NULL
@@ -268,7 +389,7 @@ async def get_participant(participant_id: str):
         LIMIT 20
     """, (participant_id,))
 
-    result["action_categories"] = q("""
+    result["action_categories"] = qp(project_id, """
         SELECT action_category, COUNT(*) as n
         FROM events
         WHERE participant_id = ?
@@ -276,7 +397,7 @@ async def get_participant(participant_id: str):
         ORDER BY n DESC
     """, (participant_id,))
 
-    result["hourly_activity"] = q("""
+    result["hourly_activity"] = qp(project_id, """
         SELECT
             CAST(SUBSTR(timestamp_utc, 12, 2) AS INTEGER) as hour,
             COUNT(*) as n
@@ -290,9 +411,9 @@ async def get_participant(participant_id: str):
 
 
 @app.get("/api/participants/{participant_id}/phases")
-async def get_participant_phases(participant_id: str):
+async def get_participant_phases(participant_id: str, project_id: str = ""):
     """Phase timeline — ordered events grouped by attack phase."""
-    events = q("""
+    events = qp(project_id, """
         SELECT
             timestamp_utc, source_host, user, action_category, action_name,
             tool, command, typed_text, attack_phase, mitre_tactic, mitre_technique,
@@ -339,6 +460,7 @@ async def get_participant_commands(
     phase: Optional[str] = None,
     host: Optional[str] = None,
     limit: int = 500,
+    project_id: str = "",
 ):
     """All extracted commands for a participant."""
     conds = ["participant_id = ?", "command != ''", "command IS NOT NULL"]
@@ -352,7 +474,7 @@ async def get_participant_commands(
         params.append(host)
 
     where = " AND ".join(conds)
-    rows = q(f"""
+    rows = qp(project_id, f"""
         SELECT timestamp_utc, source_host, user, attack_phase,
                mitre_tactic, mitre_technique, tool, command, arguments, working_dir
         FROM events
@@ -365,9 +487,9 @@ async def get_participant_commands(
 
 
 @app.get("/api/participants/{participant_id}/typed")
-async def get_participant_typed(participant_id: str):
+async def get_participant_typed(participant_id: str, project_id: str = ""):
     """Reconstructed UAT keystrokes for a participant."""
-    rows = q("""
+    rows = qp(project_id, """
         SELECT timestamp_utc, source_host, user, typed_text, command, attack_phase
         FROM events
         WHERE participant_id = ?
@@ -381,9 +503,10 @@ async def get_participant_typed(participant_id: str):
 async def get_participant_timeline(
     participant_id: str,
     limit: int = 2000,
+    project_id: str = "",
 ):
     """Full timeline for a participant, lightweight fields."""
-    rows = q(f"""
+    rows = qp(project_id, f"""
         SELECT timestamp_utc, source_host, user, action_category, action_name,
                tool, command, attack_phase, alert_severity, src_ip, dest_ip
         FROM events
@@ -1372,6 +1495,38 @@ def ingest_project(project_id: str):
     return {"status": "ingesting", "project_id": project_id, "db_path": db_path_str}
 
 
+@app.post("/api/projects/{project_id}/sync_media")
+def sync_media_for_project(project_id: str):
+    """Discover media files for a project and update the main media_registry."""
+    con = sqlite3.connect(str(DB_PATH))
+    con.row_factory = sqlite3.Row
+    row = con.execute("SELECT * FROM projects WHERE project_id=?", (project_id,)).fetchone()
+    con.close()
+    if not row:
+        raise HTTPException(404, "Project not found")
+    if row["project_type"] != "dataset":
+        raise HTTPException(400, "Only dataset projects have media")
+
+    data_path = Path(row["data_path"])
+    db_path_str = row["db_path"] or ""
+    if not db_path_str or not Path(db_path_str).exists():
+        raise HTTPException(400, "Project DB not found — run ingest first")
+
+    # Get participants from the project's DB
+    pcon = sqlite3.connect(db_path_str)
+    pcon.row_factory = sqlite3.Row
+    participants = pcon.execute(
+        "SELECT DISTINCT participant_id, scenario_name FROM events "
+        "WHERE participant_id != '' ORDER BY participant_id"
+    ).fetchall()
+    pcon.close()
+
+    participants_list = [(r["participant_id"], r["scenario_name"]) for r in participants]
+    rows = _discover_media(data_path, participants_list)
+    _write_media_rows(rows)
+    return {"discovered": len(rows), "participants": [p[0] for p in participants_list]}
+
+
 # ---------------------------------------------------------------------------
 # Timeline Sync API
 # ---------------------------------------------------------------------------
@@ -1432,7 +1587,6 @@ async def timeline_sync(
     markers = []
     for ev in event_markers:
         try:
-            from datetime import datetime
             ts = datetime.fromisoformat(ev['timestamp_utc'].replace('Z', '+00:00'))
             ts_unix = ts.timestamp()
             offset = ts_unix - start_unix if start_unix else 0
@@ -1815,8 +1969,6 @@ async def timeline_phases(
     desired time range (e.g. the media span).  Events outside the range are
     ignored; the grid always spans exactly [from_ts, to_ts].
     """
-    from datetime import datetime, timezone as _tz
-
     def parse(ts: str) -> float:
         """Parse an ISO timestamp string as UTC epoch.  Strings without a
         timezone suffix are treated as UTC (not local time)."""
@@ -1906,9 +2058,8 @@ async def timeline_phases(
             "phases": b["phases"],
         })
 
-    from datetime import datetime as _dt
     def epoch_to_iso(e: float) -> str:
-        return _dt.fromtimestamp(e, tz=_tz.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3]
+        return datetime.fromtimestamp(e, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3]
 
     return {
         "buckets": result,

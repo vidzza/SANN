@@ -666,7 +666,8 @@ async function loadParticipant(pid) {
   setLoading('LOADING MEDIA...');
 
   // 1. Load media list
-  const mResp = await fetch(`/api/media/list?participant_id=${pid}`).catch(() => null);
+  const projQs = S.projectId ? `&project_id=${S.projectId}` : '';
+  const mResp = await fetch(`/api/media/list?participant_id=${pid}${projQs}`).catch(() => null);
   const mData = mResp ? await mResp.json() : {};
   const media = mData.media || [];
 
@@ -674,7 +675,7 @@ async function loadParticipant(pid) {
   S.videoMedia = media.find(m => m.media_type === 'video') || null;
 
   // 3. Load casts
-  const cResp = await fetch(`/api/media/cast_list?participant_id=${pid}`).catch(() => null);
+  const cResp = await fetch(`/api/media/cast_list?participant_id=${pid}${projQs}`).catch(() => null);
   const cData = cResp ? await cResp.json() : {};
   S.casts = cData.casts || [];
 
