@@ -2,16 +2,19 @@
 SANN API — FastAPI server backed by godeye_v2.db
 """
 
+import asyncio
 import csv
 import io
 import json
 import shutil
 import sqlite3
+import sys
+import threading
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional, List
-from fastapi import FastAPI, HTTPException, Query, Body, Request
+from fastapi import FastAPI, HTTPException, Query, Body, Request, Form, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -41,9 +44,17 @@ app = FastAPI(
     version="2.0.0",
 )
 
+import logging as _logging
+_logger = _logging.getLogger("sann.api")
+
+_CORS_ORIGINS = [o.strip() for o in _os.environ.get(
+    "GODEYE_CORS_ORIGINS",
+    "http://localhost:8000,http://127.0.0.1:8000,http://localhost:3000"
+).split(",") if o.strip()]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=_CORS_ORIGINS,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -80,7 +91,8 @@ _BOOTSTRAP_SQL = [
         end_timestamp    TEXT,
         end_unix         REAL,
         duration_seconds REAL,
-        panel            TEXT
+        panel            TEXT,
+        project_id       TEXT DEFAULT ''
     )""",
 ]
 
@@ -93,14 +105,21 @@ async def _bootstrap_db():
         con = sqlite3.connect(str(DB_PATH))
         for sql in _BOOTSTRAP_SQL:
             con.execute(sql)
-        # Migrate: add attacker_ips column if missing
-        cols = {r[1] for r in con.execute("PRAGMA table_info(projects)").fetchall()}
-        if "attacker_ips" not in cols:
+        # Migrate: add missing columns
+        proj_cols = {r[1] for r in con.execute("PRAGMA table_info(projects)").fetchall()}
+        if "attacker_ips" not in proj_cols:
             con.execute("ALTER TABLE projects ADD COLUMN attacker_ips TEXT DEFAULT ''")
+        ev_cols = {r[1] for r in con.execute("PRAGMA table_info(events)").fetchall()}
+        if "project_id" not in ev_cols:
+            con.execute("ALTER TABLE events ADD COLUMN project_id TEXT DEFAULT ''")
+            con.execute("CREATE INDEX IF NOT EXISTS idx_project ON events(project_id, timestamp_utc)")
+        mr_cols = {r[1] for r in con.execute("PRAGMA table_info(media_registry)").fetchall()}
+        if "project_id" not in mr_cols:
+            con.execute("ALTER TABLE media_registry ADD COLUMN project_id TEXT DEFAULT ''")
         con.commit()
         con.close()
-    except Exception:
-        pass
+    except Exception as e:
+        _logger.warning(f"Bootstrap migration warning: {e}")
 
 
 # ---------------------------------------------------------------------------
@@ -207,19 +226,23 @@ def _discover_media(data_root: Path, participants: list) -> list:
     return rows
 
 
-def _write_media_rows(rows: list):
+def _write_media_rows(rows: list, project_id: str = ""):
     """Insert/replace media rows into the main DB's media_registry."""
     if not rows:
         return
+    if project_id:
+        for r in rows:
+            r['project_id'] = project_id
     con = sqlite3.connect(str(DB_PATH))
     con.executemany("""
         INSERT OR REPLACE INTO media_registry
         (media_id, participant_id, scenario_name, media_type, source_file, source_host,
-         start_timestamp, start_unix, end_timestamp, end_unix, duration_seconds, panel)
+         start_timestamp, start_unix, end_timestamp, end_unix, duration_seconds, panel,
+         project_id)
         VALUES (:media_id, :participant_id, :scenario_name, :media_type, :source_file,
                 :source_host, :start_timestamp, :start_unix, :end_timestamp, :end_unix,
-                :duration_seconds, :panel)
-    """, rows)
+                :duration_seconds, :panel, :project_id)
+    """, [{**r, 'project_id': r.get('project_id', '')} for r in rows])
     con.commit()
     con.close()
 
@@ -474,14 +497,15 @@ async def get_participant_commands(
         params.append(host)
 
     where = " AND ".join(conds)
+    limit = min(limit, 10000)
     rows = qp(project_id, f"""
         SELECT timestamp_utc, source_host, user, attack_phase,
                mitre_tactic, mitre_technique, tool, command, arguments, working_dir
         FROM events
         WHERE {where}
         ORDER BY timestamp_utc ASC
-        LIMIT {limit}
-    """, tuple(params))
+        LIMIT ?
+    """, tuple(params + [limit]))
 
     return {"participant_id": participant_id, "commands": rows, "total": len(rows)}
 
@@ -506,6 +530,7 @@ async def get_participant_timeline(
     project_id: str = "",
 ):
     """Full timeline for a participant, lightweight fields."""
+    limit = min(limit, 10000)
     rows = qp(project_id, f"""
         SELECT timestamp_utc, source_host, user, action_category, action_name,
                tool, command, attack_phase, alert_severity, src_ip, dest_ip
@@ -513,8 +538,8 @@ async def get_participant_timeline(
         WHERE participant_id = ?
           AND timestamp_utc IS NOT NULL AND timestamp_utc != ''
         ORDER BY timestamp_utc ASC
-        LIMIT {limit}
-    """, (participant_id,))
+        LIMIT ?
+    """, (participant_id, limit))
     return {"participant_id": participant_id, "timeline": rows}
 
 
@@ -523,9 +548,9 @@ async def get_participant_timeline(
 # ---------------------------------------------------------------------------
 
 @app.get("/api/phases")
-async def get_phases():
+async def get_phases(project_id: str = ""):
     """Global phase distribution across all participants."""
-    rows = q("""
+    rows = qp(project_id, """
         SELECT attack_phase, participant_id, COUNT(*) as n
         FROM events
         GROUP BY attack_phase, participant_id
@@ -542,20 +567,30 @@ async def get_phases():
         phase_map[ph]["by_participant"][r["participant_id"]] = r["n"]
 
     order = [
-        "recon", "initial_access", "lateral_movement", "privilege_escalation",
-        "persistence", "discovery", "execution", "command_and_control",
-        "exfiltration", "defense_evasion", "unknown"
+        "reconnaissance", "resource_development", "initial_access", "execution",
+        "persistence", "privilege_escalation", "defense_evasion", "credential_access",
+        "discovery", "lateral_movement", "collection", "command_and_control",
+        "exfiltration", "impact", "unknown",
     ]
     result = []
     for ph in order:
         if ph in phase_map:
             result.append(phase_map[ph])
+    # Append any phases not in the canonical order
+    for ph, data in phase_map.items():
+        if ph not in order:
+            result.append(data)
 
     return {"phases": result}
 
 
 @app.get("/api/phases/{phase}")
-async def get_phase_events(phase: str, participant_id: Optional[str] = None, limit: int = 200):
+async def get_phase_events(
+    phase: str,
+    participant_id: Optional[str] = None,
+    limit: int = 200,
+    project_id: str = "",
+):
     """Events for a specific attack phase."""
     conds = ["attack_phase = ?"]
     params: list = [phase]
@@ -563,8 +598,9 @@ async def get_phase_events(phase: str, participant_id: Optional[str] = None, lim
         conds.append("participant_id = ?")
         params.append(participant_id)
 
+    limit = min(limit, 10000)
     where = " AND ".join(conds)
-    rows = q(f"""
+    rows = qp(project_id, f"""
         SELECT timestamp_utc, participant_id, source_host, user,
                action_name, tool, command, typed_text,
                mitre_tactic, mitre_technique, src_ip, dest_ip,
@@ -572,8 +608,8 @@ async def get_phase_events(phase: str, participant_id: Optional[str] = None, lim
         FROM events
         WHERE {where}
         ORDER BY timestamp_utc ASC
-        LIMIT {limit}
-    """, tuple(params))
+        LIMIT ?
+    """, tuple(params) + (limit,))
 
     return {"phase": phase, "events": rows, "total": len(rows)}
 
@@ -589,6 +625,7 @@ async def get_commands(
     host: Optional[str] = None,
     q_str: Optional[str] = Query(None, alias="q"),
     limit: int = 200,
+    project_id: str = "",
 ):
     """Searchable command browser across all participants."""
     conds = ["command != ''", "command IS NOT NULL"]
@@ -607,21 +644,26 @@ async def get_commands(
         conds.append("command LIKE ?")
         params.append(f"%{q_str}%")
 
+    limit = min(limit, 10000)
     where = " AND ".join(conds)
-    rows = q(f"""
+    rows = qp(project_id, f"""
         SELECT timestamp_utc, participant_id, source_host, user,
                attack_phase, mitre_tactic, tool, command, arguments, working_dir
         FROM events
         WHERE {where}
         ORDER BY timestamp_utc ASC
-        LIMIT {limit}
-    """, tuple(params))
+        LIMIT ?
+    """, tuple(params) + (limit,))
 
     return {"commands": rows, "total": len(rows)}
 
 
 @app.get("/api/commands/top")
-async def get_top_commands(participant_id: Optional[str] = None, limit: int = 30):
+async def get_top_commands(
+    participant_id: Optional[str] = None,
+    limit: int = 30,
+    project_id: str = "",
+):
     """Most frequent commands."""
     conds = ["command != ''", "command IS NOT NULL", "LENGTH(command) > 4"]
     params: list = []
@@ -629,15 +671,16 @@ async def get_top_commands(participant_id: Optional[str] = None, limit: int = 30
         conds.append("participant_id = ?")
         params.append(participant_id)
 
+    limit = min(limit, 10000)
     where = " AND ".join(conds)
-    rows = q(f"""
+    rows = qp(project_id, f"""
         SELECT command, attack_phase, COUNT(*) as n
         FROM events
         WHERE {where}
         GROUP BY command
         ORDER BY n DESC
-        LIMIT {limit}
-    """, tuple(params))
+        LIMIT ?
+    """, tuple(params) + (limit,))
     return {"top_commands": rows}
 
 
@@ -646,7 +689,7 @@ async def get_top_commands(participant_id: Optional[str] = None, limit: int = 30
 # ---------------------------------------------------------------------------
 
 @app.get("/api/users")
-async def get_users(participant_id: Optional[str] = None):
+async def get_users(participant_id: Optional[str] = None, project_id: str = ""):
     """All users with activity counts."""
     conds = ["user != ''", "user IS NOT NULL"]
     params: list = []
@@ -655,7 +698,7 @@ async def get_users(participant_id: Optional[str] = None):
         params.append(participant_id)
 
     where = " AND ".join(conds)
-    rows = q(f"""
+    rows = qp(project_id, f"""
         SELECT user, participant_id,
                COUNT(*) as event_count,
                COUNT(DISTINCT source_host) as host_count,
@@ -672,9 +715,9 @@ async def get_users(participant_id: Optional[str] = None):
 
 
 @app.get("/api/users/{username}")
-async def get_user_detail(username: str):
+async def get_user_detail(username: str, project_id: str = ""):
     """Detailed activity for a specific username."""
-    base = q("""
+    base = qp(project_id, """
         SELECT user, participant_id,
                COUNT(*) as total_events,
                COUNT(DISTINCT source_host) as host_count,
@@ -688,13 +731,13 @@ async def get_user_detail(username: str):
     if not base:
         raise HTTPException(status_code=404, detail="User not found")
 
-    phases = q("""
+    phases = qp(project_id, """
         SELECT attack_phase, COUNT(*) as n
         FROM events WHERE user = ?
         GROUP BY attack_phase ORDER BY n DESC
     """, (username,))
 
-    commands = q("""
+    commands = qp(project_id, """
         SELECT timestamp_utc, source_host, participant_id,
                attack_phase, command, tool
         FROM events
@@ -711,7 +754,7 @@ async def get_user_detail(username: str):
 # ---------------------------------------------------------------------------
 
 @app.get("/api/hosts")
-async def get_hosts(participant_id: Optional[str] = None):
+async def get_hosts(participant_id: Optional[str] = None, project_id: str = ""):
     """All hosts with event counts."""
     conds = ["source_host != ''", "source_host IS NOT NULL"]
     params: list = []
@@ -720,7 +763,7 @@ async def get_hosts(participant_id: Optional[str] = None):
         params.append(participant_id)
 
     where = " AND ".join(conds)
-    rows = q(f"""
+    rows = qp(project_id, f"""
         SELECT source_host, participant_id, scenario_name,
                COUNT(*) as event_count,
                COUNT(DISTINCT user) as user_count,
@@ -734,7 +777,7 @@ async def get_hosts(participant_id: Optional[str] = None):
 
 
 @app.get("/api/hosts/{host}")
-async def get_host_detail(host: str, participant_id: Optional[str] = None):
+async def get_host_detail(host: str, participant_id: Optional[str] = None, project_id: str = ""):
     """Detailed breakdown for a host."""
     conds = ["source_host = ?"]
     params: list = [host]
@@ -744,11 +787,11 @@ async def get_host_detail(host: str, participant_id: Optional[str] = None):
 
     where = " AND ".join(conds)
 
-    phase_dist = q(f"SELECT attack_phase, COUNT(*) n FROM events WHERE {where} GROUP BY attack_phase ORDER BY n DESC", tuple(params))
-    users = q(f"SELECT user, COUNT(*) n FROM events WHERE {where} AND user != '' AND user IS NOT NULL GROUP BY user ORDER BY n DESC LIMIT 20", tuple(params))
-    tools = q(f"SELECT tool, COUNT(*) n FROM events WHERE {where} AND tool != '' AND tool IS NOT NULL GROUP BY tool ORDER BY n DESC LIMIT 20", tuple(params))
-    alerts = q(f"SELECT alert_type, alert_severity, timestamp_utc, raw_data FROM events WHERE {where} AND alert_type != '' AND alert_type IS NOT NULL ORDER BY timestamp_utc DESC LIMIT 50", tuple(params))
-    timeline = q(f"SELECT timestamp_utc, user, action_category, action_name, tool, command, attack_phase FROM events WHERE {where} AND timestamp_utc != '' AND timestamp_utc IS NOT NULL ORDER BY timestamp_utc ASC LIMIT 500", tuple(params))
+    phase_dist = qp(project_id, f"SELECT attack_phase, COUNT(*) n FROM events WHERE {where} GROUP BY attack_phase ORDER BY n DESC", tuple(params))
+    users = qp(project_id, f"SELECT user, COUNT(*) n FROM events WHERE {where} AND user != '' AND user IS NOT NULL GROUP BY user ORDER BY n DESC LIMIT 20", tuple(params))
+    tools = qp(project_id, f"SELECT tool, COUNT(*) n FROM events WHERE {where} AND tool != '' AND tool IS NOT NULL GROUP BY tool ORDER BY n DESC LIMIT 20", tuple(params))
+    alerts = qp(project_id, f"SELECT alert_type, alert_severity, timestamp_utc, raw_data FROM events WHERE {where} AND alert_type != '' AND alert_type IS NOT NULL ORDER BY timestamp_utc DESC LIMIT 50", tuple(params))
+    timeline = qp(project_id, f"SELECT timestamp_utc, user, action_category, action_name, tool, command, attack_phase FROM events WHERE {where} AND timestamp_utc != '' AND timestamp_utc IS NOT NULL ORDER BY timestamp_utc ASC LIMIT 500", tuple(params))
 
     return {
         "host": host,
@@ -770,6 +813,7 @@ async def get_timeline(
     phase: Optional[str] = None,
     host: Optional[str] = None,
     limit: int = 2000,
+    project_id: str = "",
 ):
     """Global timeline with optional filters."""
     conds = ["timestamp_utc IS NOT NULL", "timestamp_utc != ''"]
@@ -786,7 +830,8 @@ async def get_timeline(
         params.append(host)
 
     where = " AND ".join(conds)
-    rows = q(f"""
+    limit = min(limit, 10000)
+    rows = qp(project_id, f"""
         SELECT timestamp_utc, participant_id, source_host, user,
                action_category, action_name, tool, command,
                attack_phase, mitre_tactic, mitre_technique,
@@ -794,8 +839,8 @@ async def get_timeline(
         FROM events
         WHERE {where}
         ORDER BY timestamp_utc ASC
-        LIMIT {limit}
-    """, tuple(params))
+        LIMIT ?
+    """, tuple(params + [limit]))
     return {"timeline": rows}
 
 
@@ -804,7 +849,7 @@ async def get_timeline(
 # ---------------------------------------------------------------------------
 
 @app.get("/api/alerts")
-async def get_alerts(participant_id: Optional[str] = None, severity: Optional[str] = None):
+async def get_alerts(participant_id: Optional[str] = None, severity: Optional[str] = None, project_id: str = ""):
     conds = ["alert_type != ''", "alert_type IS NOT NULL"]
     params: list = []
     if participant_id:
@@ -815,7 +860,7 @@ async def get_alerts(participant_id: Optional[str] = None, severity: Optional[st
         params.append(severity)
 
     where = " AND ".join(conds)
-    rows = q(f"""
+    rows = qp(project_id, f"""
         SELECT timestamp_utc, participant_id, source_host, user,
                alert_type, alert_severity, detection_source,
                src_ip, dest_ip, raw_data
@@ -832,12 +877,12 @@ async def get_alerts(participant_id: Optional[str] = None, severity: Optional[st
 # ---------------------------------------------------------------------------
 
 @app.get("/api/relationships")
-async def get_relationships(participant_id: Optional[str] = None):
+async def get_relationships(participant_id: Optional[str] = None, project_id: str = ""):
     """Entity graph data: host-user, host-tool, user-tool, ip-host."""
     pid_cond = "AND participant_id = ?" if participant_id else ""
     pid_param = (participant_id,) if participant_id else ()
 
-    host_users = q(f"""
+    host_users = qp(project_id, f"""
         SELECT source_host as source, user as target, COUNT(*) as weight
         FROM events
         WHERE source_host != '' AND source_host IS NOT NULL
@@ -845,7 +890,7 @@ async def get_relationships(participant_id: Optional[str] = None):
         GROUP BY source_host, user ORDER BY weight DESC LIMIT 100
     """, pid_param)
 
-    host_tools = q(f"""
+    host_tools = qp(project_id, f"""
         SELECT source_host as source, tool as target, COUNT(*) as weight
         FROM events
         WHERE source_host != '' AND source_host IS NOT NULL
@@ -853,7 +898,7 @@ async def get_relationships(participant_id: Optional[str] = None):
         GROUP BY source_host, tool ORDER BY weight DESC LIMIT 100
     """, pid_param)
 
-    user_tools = q(f"""
+    user_tools = qp(project_id, f"""
         SELECT user as source, tool as target, COUNT(*) as weight
         FROM events
         WHERE user != '' AND user IS NOT NULL
@@ -861,7 +906,7 @@ async def get_relationships(participant_id: Optional[str] = None):
         GROUP BY user, tool ORDER BY weight DESC LIMIT 100
     """, pid_param)
 
-    ip_hosts = q(f"""
+    ip_hosts = qp(project_id, f"""
         SELECT src_ip as source, source_host as target, COUNT(*) as weight
         FROM events
         WHERE src_ip != '' AND src_ip IS NOT NULL
@@ -883,17 +928,20 @@ async def get_relationships(participant_id: Optional[str] = None):
 # ---------------------------------------------------------------------------
 
 @app.get("/api/media")
-async def get_media(participant_id: Optional[str] = None):
+async def get_media(participant_id: Optional[str] = None, project_id: str = ""):
     """All video and terminal recording references."""
     conds: list = []
     params: list = []
     if participant_id:
         conds.append("participant_id = ?")
         params.append(participant_id)
+    if project_id:
+        conds.append("project_id = ?")
+        params.append(project_id)
 
     where = " AND ".join(conds) if conds else "1=1"
     rows = q(f"""
-        SELECT media_id, participant_id, source_host, source_file,
+        SELECT media_id, participant_id, source_host,
                media_type, start_timestamp, duration_seconds, panel
         FROM media_registry
         WHERE {where}
@@ -932,9 +980,9 @@ async def get_stats(project_id: str = ""):
 
 
 @app.get("/api/analysis/overview")
-async def analysis_overview():
+async def analysis_overview(project_id: str = ""):
     """Backward-compat overview endpoint."""
-    return await get_stats()
+    return await get_stats(project_id=project_id)
 
 
 # ---------------------------------------------------------------------------
@@ -946,6 +994,7 @@ async def search(
     q_str: str = Query(..., alias="q"),
     participant_id: Optional[str] = None,
     limit: int = 100,
+    project_id: str = "",
 ):
     conds = [
         "(command LIKE ? OR action_name LIKE ? OR tool LIKE ? OR user LIKE ? OR raw_data LIKE ?)"
@@ -958,14 +1007,15 @@ async def search(
         params.append(participant_id)
 
     where = " AND ".join(conds)
-    rows = q(f"""
+    limit = min(limit, 10000)
+    rows = qp(project_id, f"""
         SELECT timestamp_utc, participant_id, source_host, user,
                action_name, tool, command, attack_phase, alert_type
         FROM events
         WHERE {where}
         ORDER BY timestamp_utc DESC
-        LIMIT {limit}
-    """, tuple(params))
+        LIMIT ?
+    """, tuple(params + [limit]))
     return {"results": rows, "total": len(rows)}
 
 
@@ -1014,8 +1064,8 @@ async def events_stream(
 
 
 @app.get("/api/events/{event_id}")
-async def get_event(event_id: str):
-    rows = q("SELECT * FROM events WHERE event_id = ?", (event_id,))
+async def get_event(event_id: str, project_id: str = ""):
+    rows = qp(project_id, "SELECT * FROM events WHERE event_id = ?", (event_id,))
     if not rows:
         raise HTTPException(status_code=404, detail="Event not found")
     return rows[0]
@@ -1026,26 +1076,26 @@ async def get_event(event_id: str):
 # ---------------------------------------------------------------------------
 
 @app.get("/api/network")
-async def get_network(participant_id: Optional[str] = None):
+async def get_network(participant_id: Optional[str] = None, project_id: str = ""):
     pid_cond = "AND participant_id = ?" if participant_id else ""
     pid_param = (participant_id,) if participant_id else ()
 
-    src_ips = q(f"""
+    src_ips = qp(project_id, f"""
         SELECT src_ip, COUNT(*) n FROM events
         WHERE src_ip != '' AND src_ip IS NOT NULL AND src_ip != '0.0.0.0' {pid_cond}
         GROUP BY src_ip ORDER BY n DESC LIMIT 30
     """, pid_param)
-    dest_ips = q(f"""
+    dest_ips = qp(project_id, f"""
         SELECT dest_ip, COUNT(*) n FROM events
         WHERE dest_ip != '' AND dest_ip IS NOT NULL AND dest_ip != '0.0.0.0' {pid_cond}
         GROUP BY dest_ip ORDER BY n DESC LIMIT 30
     """, pid_param)
-    protocols = q(f"""
+    protocols = qp(project_id, f"""
         SELECT protocol, COUNT(*) n FROM events
         WHERE protocol != '' AND protocol IS NOT NULL {pid_cond}
         GROUP BY protocol ORDER BY n DESC
     """, pid_param)
-    top_connections = q(f"""
+    top_connections = qp(project_id, f"""
         SELECT src_ip, dest_ip, protocol, COUNT(*) n FROM events
         WHERE src_ip != '' AND src_ip IS NOT NULL
           AND dest_ip != '' AND dest_ip IS NOT NULL
@@ -1067,10 +1117,10 @@ async def get_network(participant_id: Optional[str] = None):
 # ---------------------------------------------------------------------------
 
 @app.get("/api/behavior/{participant_id}")
-async def get_behavior(participant_id: str):
+async def get_behavior(participant_id: str, project_id: str = ""):
     """Behavioral heatmap data for a participant."""
 
-    hourly = q("""
+    hourly = qp(project_id, """
         SELECT CAST(SUBSTR(timestamp_utc, 12, 2) AS INTEGER) as hour,
                attack_phase, COUNT(*) n
         FROM events
@@ -1080,7 +1130,7 @@ async def get_behavior(participant_id: str):
         ORDER BY hour
     """, (participant_id,))
 
-    tool_usage = q("""
+    tool_usage = qp(project_id, """
         SELECT tool, attack_phase, COUNT(*) n
         FROM events
         WHERE participant_id = ? AND tool != '' AND tool IS NOT NULL
@@ -1088,7 +1138,7 @@ async def get_behavior(participant_id: str):
         ORDER BY n DESC LIMIT 30
     """, (participant_id,))
 
-    phase_sequence = q("""
+    phase_sequence = qp(project_id, """
         SELECT timestamp_utc, attack_phase, action_category
         FROM events
         WHERE participant_id = ?
@@ -1098,7 +1148,7 @@ async def get_behavior(participant_id: str):
         LIMIT 1000
     """, (participant_id,))
 
-    user_activity = q("""
+    user_activity = qp(project_id, """
         SELECT user, action_category, COUNT(*) n
         FROM events
         WHERE participant_id = ? AND user != '' AND user IS NOT NULL
@@ -1181,6 +1231,116 @@ def _count_project_events(project_id: str, project_type: str, filter_json: dict,
         return row[0]["n"] if row else 0
 
 
+@app.post("/api/projects/upload", status_code=201)
+async def upload_project(
+    name: str = Form(...),
+    attacker_ips: str = Form(""),
+    file: UploadFile = File(...),
+):
+    """Create a dataset project from an uploaded ZIP file and trigger ingest."""
+    import zipfile, tempfile, subprocess
+
+    if not (file.filename or "").lower().endswith(".zip"):
+        raise HTTPException(400, "Only .zip files are accepted")
+
+    upload_base = DB_PATH.parent / "uploads"
+    upload_base.mkdir(exist_ok=True)
+
+    project_id = str(uuid.uuid4())[:8]
+    dest = upload_base / f"dataset_{project_id}"
+    dest.mkdir(parents=True, exist_ok=True)
+
+    # Save and extract zip
+    content = await file.read()
+    tmp_fd, tmp_path = tempfile.mkstemp(suffix=".zip")
+    try:
+        _os.write(tmp_fd, content)
+        _os.close(tmp_fd)
+        with zipfile.ZipFile(tmp_path) as zf:
+            zf.extractall(str(dest))
+    except zipfile.BadZipFile:
+        shutil.rmtree(str(dest), ignore_errors=True)
+        raise HTTPException(400, "Invalid or corrupt ZIP file")
+    finally:
+        try: _os.unlink(tmp_path)
+        except Exception: pass
+
+    # If zip contained a single top-level directory, use it as data_path
+    entries = list(dest.iterdir())
+    if len(entries) == 1 and entries[0].is_dir():
+        dest = entries[0]
+
+    now = datetime.now(timezone.utc).isoformat()
+    db_path_str = str(_project_db_path(project_id))
+
+    con = sqlite3.connect(str(DB_PATH))
+    con.execute(
+        """INSERT INTO projects
+           (project_id, name, description, project_type, data_path, filter_json,
+            db_path, attacker_ips, created_at, updated_at, event_count, status)
+           VALUES (?,?,?,?,?,?,?,?,?,?,0,'ingesting')""",
+        (project_id, name, "", "dataset", str(dest), "{}", db_path_str, attacker_ips, now, now),
+    )
+    con.commit()
+    con.close()
+
+    ingest_script = str(Path(__file__).parent.parent / "ingest_v2.py")
+    cmd = [sys.executable, ingest_script, "--data-dir", str(dest), "--db", db_path_str,
+           "--project-id", project_id, "--main-db", str(DB_PATH)]
+    if attacker_ips:
+        cmd += ["--attacker-ips", attacker_ips]
+
+    pipeline_script = str(Path(__file__).parent.parent / "import_manager.py")
+    pipeline_cmd = [sys.executable, pipeline_script,
+                    "--data-root", str(dest), "--db", db_path_str,
+                    "--project-id", project_id, "--main-db", str(DB_PATH)]
+    if attacker_ips:
+        pipeline_cmd += ["--attacker-ips", attacker_ips]
+
+    def _pipeline_then_sync():
+        try:
+            subprocess.run(pipeline_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except Exception as exc:
+            _logger.warning(f"Pipeline subprocess failed for {project_id}: {exc}")
+            return
+        try:
+            sync_media_for_project(project_id)
+        except Exception as exc:
+            _logger.warning(f"Post-pipeline media sync failed for {project_id}: {exc}")
+
+    threading.Thread(target=_pipeline_then_sync, daemon=True).start()
+
+    return {"project_id": project_id, "name": name, "status": "ingesting"}
+
+
+@app.get("/api/projects/{project_id}/status")
+def project_status(project_id: str):
+    """Poll project status and current event count."""
+    con = sqlite3.connect(str(DB_PATH))
+    con.row_factory = sqlite3.Row
+    row = con.execute("SELECT * FROM projects WHERE project_id=?", (project_id,)).fetchone()
+    con.close()
+    if not row:
+        raise HTTPException(404, "Project not found")
+    fj = {}
+    try: fj = json.loads(row["filter_json"] or "{}")
+    except Exception: pass
+    cnt = _count_project_events(row["project_id"], row["project_type"], fj, row["db_path"])
+    # Auto-mark ready once ingest finishes (process gone and DB has events)
+    status = row["status"]
+    if status == "ingesting" and cnt > 0:
+        try:
+            ucon = sqlite3.connect(str(DB_PATH))
+            ucon.execute("UPDATE projects SET status='ready', event_count=?, updated_at=? WHERE project_id=?",
+                         (cnt, datetime.now(timezone.utc).isoformat(), project_id))
+            ucon.commit()
+            ucon.close()
+            status = "ready"
+        except Exception:
+            pass
+    return {"project_id": project_id, "status": status, "event_count": cnt}
+
+
 @app.get("/api/projects")
 def list_projects():
     con = sqlite3.connect(str(DB_PATH))
@@ -1222,6 +1382,22 @@ def create_project(body: ProjectCreate):
         raise HTTPException(400, "project_type must be 'dataset' or 'filter'")
     if body.project_type == "dataset" and not body.data_path:
         raise HTTPException(400, "data_path required for dataset projects")
+    if body.project_type == "dataset" and body.data_path:
+        try:
+            resolved = Path(body.data_path).resolve()
+            allowed = MEDIA_ROOT.parent.resolve()
+            if not str(resolved).startswith(str(allowed)):
+                raise HTTPException(400, f"data_path must be under {allowed}")
+        except HTTPException:
+            raise
+        except Exception:
+            raise HTTPException(400, "Invalid data_path")
+    if body.attacker_ips:
+        import re as _re
+        for ip in body.attacker_ips.split(","):
+            ip = ip.strip()
+            if ip and not _re.match(r'^[\d.:a-fA-F/]+$', ip):
+                raise HTTPException(400, f"Invalid IP: {ip}")
 
     pid = str(uuid.uuid4())[:8]
     now = datetime.now(timezone.utc).isoformat()
@@ -1285,8 +1461,9 @@ def delete_project(project_id: str):
     con.commit()
     con.close()
     if db_path_str:
-        p = Path(db_path_str)
-        if p.exists():
+        p = Path(db_path_str).resolve()
+        allowed_dir = DB_PATH.parent.resolve()
+        if p.exists() and str(p).startswith(str(allowed_dir)):
             p.unlink()
 
 
@@ -1441,9 +1618,10 @@ def export_sqlite(project_id: str):
                             filename=f"{project_id}.sqlite")
     else:
         # Build a temp SQLite with just the filtered events
-        tmp_path = Path(f"/tmp/godeye_export_{project_id}.db")
-        if tmp_path.exists():
-            tmp_path.unlink()
+        import tempfile as _tempfile
+        tmp_fd, tmp_path_str = _tempfile.mkstemp(suffix=".db", prefix=f"godeye_export_{project_id}_")
+        _os.close(tmp_fd)
+        tmp_path = Path(tmp_path_str)
         src_con = sqlite3.connect(str(DB_PATH))
         dst_con = sqlite3.connect(str(tmp_path))
         # Copy schema
@@ -1487,7 +1665,7 @@ def ingest_project(project_id: str):
     con.close()
 
     ingest_script = str(Path(__file__).parent.parent / "ingest_v2.py")
-    cmd = ["python3", ingest_script, "--data-dir", data_path, "--db", db_path_str,
+    cmd = [sys.executable, ingest_script, "--data-dir", data_path, "--db", db_path_str,
            "--project-id", project_id, "--main-db", str(DB_PATH)]
     if attacker_ips:
         cmd += ["--attacker-ips", attacker_ips]
@@ -1523,7 +1701,7 @@ def sync_media_for_project(project_id: str):
 
     participants_list = [(r["participant_id"], r["scenario_name"]) for r in participants]
     rows = _discover_media(data_path, participants_list)
-    _write_media_rows(rows)
+    _write_media_rows(rows, project_id=project_id)
     return {"discovered": len(rows), "participants": [p[0] for p in participants_list]}
 
 
@@ -1535,23 +1713,27 @@ def sync_media_for_project(project_id: str):
 async def timeline_sync(
     participant_id: Optional[str] = None,
     scenario: Optional[str] = None,
+    project_id: str = "",
 ):
     """Get timeline sync data with all media items and markers"""
     conds = []
     params = []
-    
+
     if participant_id:
         conds.append("participant_id = ?")
         params.append(participant_id)
     if scenario:
         conds.append("scenario_name = ?")
         params.append(scenario)
-    
+    if project_id:
+        conds.append("project_id = ?")
+        params.append(project_id)
+
     where = " AND ".join(conds) if conds else "1=1"
-    
-    # Get media items
+
+    # Get media items (media_registry lives in main DB — always use q())
     media_rows = q(f"""
-        SELECT media_id, media_type, source_file, source_host,
+        SELECT media_id, media_type, source_host,
                start_timestamp, start_unix, end_timestamp, end_unix,
                duration_seconds, panel
         FROM media_registry
@@ -1574,7 +1756,7 @@ async def timeline_sync(
     duration = end_unix - start_unix if start_unix is not None and end_unix is not None else 0
     
     # Get event markers for timeline
-    event_markers = q("""
+    event_markers = qp(project_id, """
         SELECT timestamp_utc, attack_phase, action_name, command, source_type
         FROM events
         WHERE timestamp_utc IS NOT NULL AND timestamp_utc != ''
@@ -1599,9 +1781,9 @@ async def timeline_sync(
                 'command': ev.get('command', '')[:50],
                 'type': ev['source_type']
             })
-        except:
+        except Exception:
             pass
-    
+
     return {
         "participant_id": participant_id,
         "scenario": scenario,
@@ -1644,11 +1826,11 @@ async def timeline_cast(
     if media_start_epoch is not None:
         if start_offset is not None:
             conds.append("timestamp_utc >= ?")
-            params.append(datetime.utcfromtimestamp(media_start_epoch + start_offset).isoformat())
+            params.append(datetime.fromtimestamp(media_start_epoch + start_offset, tz=timezone.utc).replace(tzinfo=None).isoformat())
         if end_offset is not None:
             conds.append("timestamp_utc <= ?")
-            params.append(datetime.utcfromtimestamp(media_start_epoch + end_offset).isoformat())
-    
+            params.append(datetime.fromtimestamp(media_start_epoch + end_offset, tz=timezone.utc).replace(tzinfo=None).isoformat())
+
     where = " AND ".join(conds)
     commands = q(f"""
         SELECT timestamp_utc, command
@@ -1656,10 +1838,9 @@ async def timeline_cast(
         WHERE {where}
         ORDER BY timestamp_utc
     """, tuple(params))
-    
+
     return {
         "media_id": media_id,
-        "source_file": media['source_file'],
         "start_offset": start_offset,
         "commands": commands
     }
@@ -1692,11 +1873,11 @@ async def timeline_uat(
     if media_start_epoch is not None:
         if start_offset is not None:
             conds.append("timestamp_utc >= ?")
-            params.append(datetime.utcfromtimestamp(media_start_epoch + start_offset).isoformat())
+            params.append(datetime.fromtimestamp(media_start_epoch + start_offset, tz=timezone.utc).replace(tzinfo=None).isoformat())
         if end_offset is not None:
             conds.append("timestamp_utc <= ?")
-            params.append(datetime.utcfromtimestamp(media_start_epoch + end_offset).isoformat())
-    
+            params.append(datetime.fromtimestamp(media_start_epoch + end_offset, tz=timezone.utc).replace(tzinfo=None).isoformat())
+
     where = " AND ".join(conds)
     keystrokes = q(f"""
         SELECT timestamp_utc, typed_text, tool, raw_data
@@ -1704,10 +1885,9 @@ async def timeline_uat(
         WHERE {where}
         ORDER BY timestamp_utc
     """, tuple(params))
-    
+
     return {
         "media_id": media_id,
-        "source_file": media['source_file'],
         "start_offset": start_offset,
         "keystrokes": keystrokes
     }
@@ -1738,12 +1918,12 @@ async def timeline_pcap(
         if start_offset is not None:
             ts_start = base_ts + start_offset
             conds.append("timestamp_utc >= ?")
-            params.append(datetime.utcfromtimestamp(ts_start).isoformat())
+            params.append(datetime.fromtimestamp(ts_start, tz=timezone.utc).replace(tzinfo=None).isoformat())
         if end_offset is not None:
             ts_end = base_ts + end_offset
             conds.append("timestamp_utc <= ?")
-            params.append(datetime.utcfromtimestamp(ts_end).isoformat())
-    
+            params.append(datetime.fromtimestamp(ts_end, tz=timezone.utc).replace(tzinfo=None).isoformat())
+
     where = " AND ".join(conds)
     packets = q(f"""
         SELECT timestamp_utc, src_ip, dest_ip, protocol, dest_port, action_name
@@ -1752,10 +1932,9 @@ async def timeline_pcap(
         ORDER BY timestamp_utc
         LIMIT 100
     """, tuple(params))
-    
+
     return {
         "media_id": media_id,
-        "source_file": media['source_file'],
         "start_offset": start_offset,
         "packets": packets
     }
@@ -1767,36 +1946,38 @@ async def timeline_events(
     start_offset: Optional[float] = None,
     end_offset: Optional[float] = None,
     source_type: Optional[str] = None,
-    limit: int = 1000
+    limit: int = 1000,
+    project_id: str = "",
 ):
     """Get events within time range with offset_seconds"""
     conds = []
     params = []
-    
+
     if participant_id:
         conds.append("participant_id = ?")
         params.append(participant_id)
-    
+
     if source_type:
         conds.append("source_type = ?")
         params.append(source_type)
-    
+
     where = " AND ".join(conds) if conds else "1=1"
-    
+    limit = min(limit, 10000)
+
     # Get all events for participant first, then filter by offset
-    rows = q(f"""
-        SELECT timestamp_utc, source_type, action_name, command, typed_text, user, 
+    rows = qp(project_id, f"""
+        SELECT timestamp_utc, source_type, action_name, command, typed_text, user,
                source_host, attack_phase, src_ip, dest_ip, dest_port, protocol
         FROM events
         WHERE {where}
         ORDER BY timestamp_utc
         LIMIT ?
     """, tuple(params + [limit]))
-    
+
     # Get media start time for this participant using start_timestamp (start_unix unreliable)
     media_start = q("""
-        SELECT MIN(start_timestamp) as start_ts 
-        FROM media_registry 
+        SELECT MIN(start_timestamp) as start_ts
+        FROM media_registry
         WHERE participant_id = ?
     """, (participant_id,))
     
@@ -1837,7 +2018,8 @@ async def timeline_events(
 @app.get("/api/timeline/playback")
 async def timeline_playback(
     participant_id: str,
-    offset_seconds: float = 0
+    offset_seconds: float = 0,
+    project_id: str = "",
 ):
     """Get synchronized playback state at specific offset"""
     # Get all media for participant — use start_timestamp, not start_unix (broken in old data)
@@ -1886,9 +2068,8 @@ async def timeline_playback(
                     "seek_to": offset_seconds - (media_start - base_unix)
                 }
             elif panel == 'terminal':
-                # Get command at this time using timestamp_utc (no offset_seconds column)
-                cmd_abs_ts = datetime.utcfromtimestamp(base_unix + offset_seconds).isoformat()
-                cmds = q("""
+                cmd_abs_ts = datetime.fromtimestamp(base_unix + offset_seconds, tz=timezone.utc).replace(tzinfo=None).isoformat()
+                cmds = qp(project_id, """
                     SELECT command, timestamp_utc
                     FROM events
                     WHERE source_type = 'terminal_recording'
@@ -1904,9 +2085,8 @@ async def timeline_playback(
                     "command_timestamp": cmds[0]['timestamp_utc'] if cmds else ""
                 }
             elif panel == 'keylogger':
-                # Get typed text using timestamp_utc (no offset_seconds column)
-                kd_abs_ts = datetime.utcfromtimestamp(base_unix + offset_seconds).isoformat()
-                kd = q("""
+                kd_abs_ts = datetime.fromtimestamp(base_unix + offset_seconds, tz=timezone.utc).replace(tzinfo=None).isoformat()
+                kd = qp(project_id, """
                     SELECT typed_text, timestamp_utc
                     FROM events
                     WHERE source_type = 'uat'
@@ -1922,10 +2102,10 @@ async def timeline_playback(
                 }
             elif panel == 'network':
                 result['network']['available'] = True
-    
+
     # Get logs at this time
-    ts = datetime.utcfromtimestamp(result['timestamp']).isoformat()
-    logs = q("""
+    ts = datetime.fromtimestamp(result['timestamp'], tz=timezone.utc).replace(tzinfo=None).isoformat()
+    logs = qp(project_id, """
         SELECT timestamp_utc, source_type, action_name, command
         FROM events
         WHERE participant_id = ?
@@ -1935,9 +2115,9 @@ async def timeline_playback(
     """, (participant_id, ts))
     if logs:
         result['logs'] = {"available": True, "events": logs}
-    
+
     # Get alerts
-    alerts = q("""
+    alerts = qp(project_id, """
         SELECT timestamp_utc, alert_type, alert_severity, src_ip
         FROM events
         WHERE participant_id = ?
@@ -2073,9 +2253,10 @@ async def timeline_phases(
 
 
 @app.get("/api/stats/participant")
-async def participant_stats(participant_id: str):
+async def participant_stats(participant_id: str, project_id: str = ""):
     """Summary stats for a participant — counts, top IPs, top hosts, top commands."""
-    base = q(
+    base = qp(
+        project_id,
         """SELECT COUNT(*) total,
                   COUNT(DISTINCT source_host) hosts,
                   COUNT(DISTINCT user) users,
@@ -2086,37 +2267,44 @@ async def participant_stats(participant_id: str):
         (participant_id,),
     )[0]
 
-    source_counts = q(
+    source_counts = qp(
+        project_id,
         "SELECT source_type, COUNT(*) n FROM events WHERE participant_id=? GROUP BY source_type ORDER BY n DESC",
         (participant_id,),
     )
-    phase_counts = q(
+    phase_counts = qp(
+        project_id,
         "SELECT attack_phase, COUNT(*) n FROM events WHERE participant_id=? GROUP BY attack_phase ORDER BY n DESC",
         (participant_id,),
     )
-    top_commands = q(
+    top_commands = qp(
+        project_id,
         """SELECT command, COUNT(*) n FROM events
            WHERE participant_id=? AND command != '' AND command IS NOT NULL
            GROUP BY command ORDER BY n DESC LIMIT 10""",
         (participant_id,),
     )
-    top_src_ips = q(
+    top_src_ips = qp(
+        project_id,
         """SELECT src_ip, COUNT(*) n FROM events
            WHERE participant_id=? AND src_ip != '' AND src_ip IS NOT NULL
            GROUP BY src_ip ORDER BY n DESC LIMIT 10""",
         (participant_id,),
     )
-    top_dest_ips = q(
+    top_dest_ips = qp(
+        project_id,
         """SELECT dest_ip, COUNT(*) n FROM events
            WHERE participant_id=? AND dest_ip != '' AND dest_ip IS NOT NULL
            GROUP BY dest_ip ORDER BY n DESC LIMIT 10""",
         (participant_id,),
     )
-    top_hosts = q(
+    top_hosts = qp(
+        project_id,
         "SELECT source_host, COUNT(*) n FROM events WHERE participant_id=? GROUP BY source_host ORDER BY n DESC LIMIT 10",
         (participant_id,),
     )
-    alerts = q(
+    alerts = qp(
+        project_id,
         """SELECT alert_type, alert_severity, COUNT(*) n FROM events
            WHERE participant_id=? AND alert_type != '' AND alert_type IS NOT NULL
            GROUP BY alert_type, alert_severity ORDER BY n DESC LIMIT 10""",
@@ -2179,18 +2367,25 @@ async def media_stream(media_id: str, request: Request):
 
 
 @app.get("/api/media/list")
-async def media_list(participant_id: str):
+async def media_list(participant_id: str, project_id: str = ""):
     """Return all media registry entries for a participant."""
+    conds = ["participant_id = ?"]
+    params: list = [participant_id]
+    if project_id:
+        conds.append("project_id = ?")
+        params.append(project_id)
     rows = q(
-        "SELECT * FROM media_registry WHERE participant_id = ? ORDER BY start_timestamp",
-        (participant_id,),
+        f"SELECT media_id, participant_id, source_host, media_type, start_timestamp, end_timestamp, duration_seconds, panel FROM media_registry WHERE {' AND '.join(conds)} ORDER BY start_timestamp",
+        tuple(params),
     )
     return {"media": rows}
 
 
 @app.get("/api/media/video/{participant_id}")
-async def media_video(participant_id: str):
-    """Stream the video file with Range support for seeking. Prefers .webm over .ogv."""
+async def media_video(participant_id: str, t: float = 0.0):
+    """Stream video with browser-compatible codec. Prefers pre-transcoded .webm; otherwise
+    stream-transcodes OGV/Theora → VP8 WebM via ffmpeg (Chrome/Edge dropped Theora support).
+    The ?t= parameter seeks to a specific second offset before streaming starts."""
     rows = q(
         "SELECT source_file FROM media_registry WHERE participant_id = ? AND media_type = 'video' LIMIT 1",
         (participant_id,),
@@ -2198,19 +2393,70 @@ async def media_video(participant_id: str):
     if not rows:
         raise HTTPException(status_code=404, detail="No video found for participant")
     path = Path(rows[0]["source_file"])
-    # Prefer .webm (VP9) if it exists alongside the original file
+
+    # Prefer pre-transcoded .webm — supports full native seeking
     webm_path = path.with_suffix(".webm")
     if webm_path.exists():
-        path = webm_path
-        mime = "video/webm"
-    elif path.exists():
-        mime = "video/ogg"
-    else:
+        return FileResponse(str(webm_path), media_type="video/webm", headers={
+            "Accept-Ranges": "bytes",
+            "Cache-Control": "no-cache",
+        })
+
+    if not path.exists():
         raise HTTPException(status_code=404, detail=f"Video file not found: {path}")
-    return FileResponse(str(path), media_type=mime, headers={
-        "Accept-Ranges": "bytes",
-        "Cache-Control": "no-cache",
-    })
+
+    # Native .webm — serve directly
+    if path.suffix.lower() == ".webm":
+        return FileResponse(str(path), media_type="video/webm", headers={
+            "Accept-Ranges": "bytes",
+            "Cache-Control": "no-cache",
+        })
+
+    # OGV/Theora: transcode on-the-fly to VP8 WebM so Chrome/Edge can play it.
+    # -ss before -i enables fast stream seek (key-frame seek in Theora).
+    # -deadline realtime / -cpu-used 8 trades quality for real-time throughput.
+    seek_offset = max(0.0, t)
+
+    async def transcode_stream():
+        cmd = [
+            "ffmpeg",
+            "-ss", str(seek_offset),
+            "-i", str(path),
+            "-c:v", "libvpx",
+            "-deadline", "realtime",
+            "-cpu-used", "8",
+            "-b:v", "800k",
+            "-c:a", "libvorbis",
+            "-b:a", "96k",
+            "-f", "webm",
+            "pipe:1",
+        ]
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+        try:
+            while True:
+                chunk = await proc.stdout.read(65536)
+                if not chunk:
+                    break
+                yield chunk
+        finally:
+            try:
+                proc.kill()
+            except Exception:
+                pass
+            await proc.wait()
+
+    return StreamingResponse(
+        transcode_stream(),
+        media_type="video/webm",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 @app.get("/api/media/cast")
@@ -2272,7 +2518,6 @@ async def media_cast_list(participant_id: str):
         result.append({
             "media_id": r["media_id"],
             "filename": Path(r["source_file"]).name,
-            "source_file": r["source_file"],
             "start_timestamp": r["start_timestamp"],
             "start_unix": r["start_unix"],
             "duration_seconds": r["duration_seconds"],

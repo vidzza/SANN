@@ -87,17 +87,59 @@ def get_video_duration(webm: Path) -> float | None:
 # Step 1 — Run ingest_v2.py
 # ---------------------------------------------------------------------------
 
-def run_ingest(data_root: Path, db_path: Path):
+def run_ingest(data_root: Path, db_path: Path,
+               project_id: str = '', main_db: Path | None = None,
+               attacker_ips: str = ''):
     log.info(f"Running ingest_v2.py  data-dir={data_root}  db={db_path} ...")
-    result = subprocess.run(
-        [sys.executable, str(INGEST_SCRIPT),
-         '--data-dir', str(data_root),
-         '--db', str(db_path)],
-        timeout=600
-    )
+    cmd = [sys.executable, str(INGEST_SCRIPT),
+           '--data-dir', str(data_root),
+           '--db', str(db_path)]
+    if project_id:
+        cmd += ['--project-id', project_id]
+    if main_db:
+        cmd += ['--main-db', str(main_db)]
+    if attacker_ips:
+        cmd += ['--attacker-ips', attacker_ips]
+    result = subprocess.run(cmd, timeout=7200)
     if result.returncode != 0:
         raise RuntimeError(f"ingest_v2.py exited with code {result.returncode}")
     log.info("Ingest complete.")
+
+
+# ---------------------------------------------------------------------------
+# Post-ingest corrections
+# ---------------------------------------------------------------------------
+
+def dedupe_orig_participants(con: sqlite3.Connection):
+    """Remove events and media_registry rows for .orig participants (duplicate re-runs)."""
+    orig_pids = [r[0] for r in con.execute(
+        "SELECT DISTINCT participant_id FROM events WHERE participant_id LIKE '%.orig'"
+    )]
+    if not orig_pids:
+        log.info("No .orig participants found — nothing to deduplicate")
+        return
+    for pid in orig_pids:
+        n = con.execute("SELECT COUNT(*) FROM events WHERE participant_id=?", (pid,)).fetchone()[0]
+        con.execute("DELETE FROM events WHERE participant_id=?", (pid,))
+        con.execute("DELETE FROM media_registry WHERE participant_id=? OR 0=0",
+                    (pid,))  # SQLite doesn't error if table doesn't exist, but handle it:
+        try:
+            con.execute("DELETE FROM media_registry WHERE participant_id=?", (pid,))
+        except Exception:
+            pass
+        log.info(f"Deduplicated .orig participant {pid}: removed {n} events")
+    con.commit()
+
+
+def fix_recon_taxonomy(con: sqlite3.Connection):
+    """Rename legacy 'recon' attack_phase to 'reconnaissance' (MITRE TA0043)."""
+    n = con.execute("SELECT COUNT(*) FROM events WHERE attack_phase='recon'").fetchone()[0]
+    if n == 0:
+        log.info("No 'recon' phase labels found — taxonomy already clean")
+        return
+    con.execute("UPDATE events SET attack_phase='reconnaissance' WHERE attack_phase='recon'")
+    con.commit()
+    log.info(f"Taxonomy fix: renamed {n} events from 'recon' → 'reconnaissance'")
 
 # ---------------------------------------------------------------------------
 # Step 2 — Fix suricata timestamps (local-tz → UTC)
@@ -530,42 +572,122 @@ def validate(con: sqlite3.Connection) -> bool:
 # Main
 # ---------------------------------------------------------------------------
 
+def run_full_pipeline(project_id: str, data_root: str, db_path: str,
+                      attacker_ips: str = '', main_db: str = ''):
+    """
+    Complete post-ingest pipeline for any project (ZIP upload or manual ingest).
+    Runs: ingest → dedup → taxonomy fix → suricata TZ fix → syslog year fix → validate.
+    Sets projects.status='ready' in main DB when done, or 'error' on failure.
+    """
+    root = Path(data_root)
+    db = Path(db_path)
+    main = Path(main_db) if main_db else None
+
+    def _set_status(status: str):
+        if main and main.exists() and project_id:
+            try:
+                mcon = sqlite3.connect(str(main))
+                mcon.execute("UPDATE projects SET status=?, updated_at=? WHERE project_id=?",
+                             (status, datetime.now(timezone.utc).isoformat(), project_id))
+                mcon.commit()
+                mcon.close()
+            except Exception as e:
+                log.warning(f"Could not update project status to {status}: {e}")
+
+    try:
+        _set_status('ingesting')
+
+        run_ingest(root, db, project_id=project_id, main_db=main, attacker_ips=attacker_ips)
+
+        con = sqlite3.connect(str(db))
+        con.row_factory = sqlite3.Row
+
+        dedupe_orig_participants(con)
+        fix_recon_taxonomy(con)
+        fix_suricata_timestamps(con, root)
+        fix_syslog_years(con, root)
+        validate(con)
+        con.close()
+
+        if main and main.exists() and project_id:
+            mcon = sqlite3.connect(str(main))
+            fix_recon_taxonomy(mcon)
+            dedupe_orig_participants(mcon)
+            mcon.close()
+
+        _set_status('ready')
+        log.info(f"run_full_pipeline complete for project {project_id}")
+
+    except Exception as exc:
+        log.error(f"run_full_pipeline failed for project {project_id}: {exc}")
+        _set_status('error')
+        raise
+
+
 def main():
     parser = argparse.ArgumentParser(description='SANN Dataset Import Manager')
-    parser.add_argument('--data-root', type=Path, default=DATA_ROOT)
-    parser.add_argument('--db',        type=Path, default=DB_PATH)
-    parser.add_argument('--skip-ingest', action='store_true',
-                        help='Skip ingest_v2.py, just fix and validate existing DB')
+    parser.add_argument('--data-root',    type=Path, default=DATA_ROOT)
+    parser.add_argument('--db',           type=Path, default=DB_PATH)
+    parser.add_argument('--main-db',      type=Path, default=None,
+                        help='Main corpus DB for dual-write (defaults to --db when no --project-id)')
+    parser.add_argument('--project-id',   default='',
+                        help='Project ID — enables dual-write into main DB and per-project attacker IPs')
+    parser.add_argument('--attacker-ips', default='',
+                        help='Comma-separated attacker IPs for sensor_packet classification')
+    parser.add_argument('--skip-ingest',  action='store_true',
+                        help='Skip ingest_v2.py, just fix/validate existing DB')
     args = parser.parse_args()
+
+    # When no separate main-db given and no project-id, db IS the main db
+    main_db = args.main_db or (None if args.project_id else args.db)
 
     log.info("=" * 60)
     log.info("SANN Import Manager")
-    log.info(f"  data-root : {args.data_root}")
-    log.info(f"  db        : {args.db}")
+    log.info(f"  data-root  : {args.data_root}")
+    log.info(f"  db         : {args.db}")
+    log.info(f"  project-id : {args.project_id or '(default)'}")
+    log.info(f"  main-db    : {main_db or '(same as db)'}")
     log.info("=" * 60)
 
     # Step 1 — Ingest
     if not args.skip_ingest:
-        run_ingest(args.data_root, args.db)
+        run_ingest(args.data_root, args.db,
+                   project_id=args.project_id,
+                   main_db=main_db,
+                   attacker_ips=args.attacker_ips)
     else:
         log.info("Skipping ingest (--skip-ingest)")
 
     con = sqlite3.connect(str(args.db))
     con.row_factory = sqlite3.Row
 
-    # Step 2 — Fix suricata TZ
+    # Step 2 — Deduplicate .orig participants (same human, different snapshot)
+    dedupe_orig_participants(con)
+
+    # Step 3 — Fix recon→reconnaissance taxonomy
+    fix_recon_taxonomy(con)
+
+    # Step 4 — Fix suricata TZ
     fix_suricata_timestamps(con, args.data_root)
 
-    # Step 3 — Rebuild media_registry
+    # Step 5 — Rebuild media_registry (goes into the project DB or main DB)
     rebuild_media_registry(con, args.data_root)
 
-    # Step 4 — Fix syslog/auth year
+    # Step 6 — Fix syslog/auth year
     fix_syslog_years(con, args.data_root)
 
-    # Step 5 — Validate
+    # Step 7 — Validate
     passed = validate(con)
 
     con.close()
+
+    # If dual-write was active, apply taxonomy fix to main DB too
+    if main_db and main_db != args.db and main_db.exists() and args.project_id:
+        log.info(f"Applying taxonomy fix to main DB ({main_db}) ...")
+        mcon = sqlite3.connect(str(main_db))
+        fix_recon_taxonomy(mcon)
+        dedupe_orig_participants(mcon)
+        mcon.close()
 
     log.info("=" * 60)
     if passed:

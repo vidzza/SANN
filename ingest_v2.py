@@ -12,7 +12,7 @@ import sqlite3
 import logging
 import hashlib
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Iterator, Dict, List, Optional, Tuple
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
@@ -47,9 +47,9 @@ ATTACKER_IPS = tuple(
 # ---------------------------------------------------------------------------
 PHASE_RULES = [
     # (regex_on_command_or_action, phase, tactic, technique)
-    (r'nmap|masscan|ping|arp-scan|netdiscover|fping|unicornscan', 'recon', 'TA0043', 'T1046'),
-    (r'whois|host|dig|nslookup|theHarvester|amass|subfinder|dnsrecon', 'recon', 'TA0043', 'T1018'),
-    (r'nikto|dirbuster|gobuster|dirb|ffuf|wfuzz|feroxbuster', 'recon', 'TA0043', 'T1595'),
+    (r'nmap|masscan|ping|arp-scan|netdiscover|fping|unicornscan', 'reconnaissance', 'TA0043', 'T1046'),
+    (r'whois|host|dig|nslookup|theHarvester|amass|subfinder|dnsrecon', 'reconnaissance', 'TA0043', 'T1018'),
+    (r'nikto|dirbuster|gobuster|dirb|ffuf|wfuzz|feroxbuster', 'reconnaissance', 'TA0043', 'T1595'),
     (r'sqlmap|sqli|sql.*injection', 'initial_access', 'TA0001', 'T1190'),
     (r'hydra|medusa|john|hashcat|cupp|bruteforce|brute.?force|password.*spray', 'initial_access', 'TA0001', 'T1110'),
     (r'exploit|msf|msfconsole|msfvenom|metasploit|CVE-', 'initial_access', 'TA0001', 'T1203'),
@@ -75,6 +75,13 @@ PHASE_RULES = [
 ROOTKIT_PHASE = 'persistence'
 HONEYPOT_PHASE = 'initial_access'
 BRUTEFORCE_PHASE = 'initial_access'
+
+MITRE_TACTICS = {
+    'reconnaissance', 'resource_development', 'initial_access', 'execution',
+    'persistence', 'privilege_escalation', 'defense_evasion', 'credential_access',
+    'discovery', 'lateral_movement', 'collection', 'command_and_control',
+    'exfiltration', 'impact', 'unknown',
+}
 
 
 def classify_phase(command: str, action_name: str, tool: str, raw_data: str = '') -> Tuple[str, str, str]:
@@ -162,7 +169,7 @@ def classify_phase(command: str, action_name: str, tool: str, raw_data: str = ''
     if 'login' in text or 'auth' in text:
         return 'initial_access', 'TA0001', 'T1078'
     if 'network' in text or 'flow' in text:
-        return 'recon', 'TA0043', 'T1046'
+        return 'reconnaissance', 'TA0043', 'T1046'
     if 'docker' in text:
         return 'execution', 'TA0002', 'T1610'
     return 'unknown', '', ''
@@ -505,7 +512,8 @@ CREATE TABLE IF NOT EXISTS events (
     user_agent       TEXT,
     http_status      INTEGER DEFAULT 0,
     raw_data         TEXT,
-    extra_data       TEXT
+    extra_data       TEXT,
+    project_id       TEXT DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_ts      ON events(timestamp_utc);
 CREATE INDEX IF NOT EXISTS idx_part    ON events(participant_id);
@@ -516,11 +524,12 @@ CREATE INDEX IF NOT EXISTS idx_user    ON events(user);
 CREATE INDEX IF NOT EXISTS idx_tool    ON events(tool);
 CREATE INDEX IF NOT EXISTS idx_action  ON events(action_name);
 CREATE INDEX IF NOT EXISTS idx_srctype ON events(source_type);
+CREATE INDEX IF NOT EXISTS idx_project ON events(project_id, timestamp_utc);
 '''
 
 INSERT_SQL = '''
 INSERT OR REPLACE INTO events VALUES (
-    ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?
+    ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?
 )
 '''
 
@@ -574,6 +583,7 @@ class DBv2:
             int(e.get('http_status', 0) or 0),
             e.get('raw_data', ''),
             e.get('extra_data', ''),
+            e.get('project_id', ''),
         ))
         if len(self._buf) >= 2000:
             self.flush()
@@ -612,9 +622,13 @@ def parse_path_meta(file_path: Path):
     scenario_name = ''
 
     # Find participant dir — matches user<alphanum>[.orig] patterns
+    # Dirs ending in .orig are duplicate re-runs — skip them at ingest time.
     pid_idx = None
     for i, part in enumerate(parts):
         if re.match(r'user[\w.]+$', part, re.IGNORECASE):
+            if part.endswith('.orig'):
+                logger.debug(f"Skipping .orig participant dir: {part}")
+                return '', '', ''
             participant_id = part
             pid_idx = i
             break
@@ -778,7 +792,7 @@ def parse_bt_jsonl(file_path: Path, participant_id, scenario_name, host) -> Iter
                 if ts_raw:
                     try:
                         dt = datetime.fromisoformat(ts_raw.replace('Z', '+00:00'))
-                        ts_str = dt.replace(tzinfo=None).isoformat()
+                        ts_str = dt.astimezone(timezone.utc).replace(tzinfo=None).isoformat()
                     except:
                         ts_str = ts_raw
 
@@ -852,20 +866,20 @@ def parse_sensor_log(file_path: Path, participant_id, scenario_name, host) -> It
                 # Python dict-like lines: {'time': ..., 'type': 'PACKET', 'data': {...}}
                 if line.startswith("{'time'") or line.startswith('{"time"'):
                     try:
-                        data = json.loads(line.replace("'", '"'))
-                    except:
+                        import ast as _ast
+                        data = _ast.literal_eval(line)
+                    except Exception:
                         try:
-                            import ast
-                            data = ast.literal_eval(line)
-                        except:
+                            data = json.loads(line.replace("'", '"'))
+                        except Exception:
                             continue
 
                     ts_float = data.get('time', 0)
                     ts_str = ''
                     if ts_float:
                         try:
-                            ts_str = datetime.utcfromtimestamp(ts_float).isoformat()
-                        except:
+                            ts_str = datetime.fromtimestamp(ts_float, tz=timezone.utc).replace(tzinfo=None).isoformat()
+                        except Exception:
                             pass
 
                     dtype = data.get('type', '')
@@ -925,7 +939,7 @@ def parse_sensor_log(file_path: Path, participant_id, scenario_name, host) -> It
                         ts_str = ''
                         if ts_raw:
                             try:
-                                ts_str = datetime.fromisoformat(ts_raw.replace('Z', '+00:00')).replace(tzinfo=None).isoformat()
+                                ts_str = datetime.fromisoformat(ts_raw.replace('Z', '+00:00')).astimezone(timezone.utc).replace(tzinfo=None).isoformat()
                             except:
                                 ts_str = ts_raw
 
@@ -1209,7 +1223,7 @@ def parse_suricata_eve(file_path: Path, participant_id, scenario_name, host) -> 
                         normalized = _re.sub(
                             r'([+-])(\d{2})(\d{2})$', r'\1\2:\3', ts_raw
                         )
-                        ts_str = datetime.fromisoformat(normalized.replace('Z', '+00:00')).replace(tzinfo=None).isoformat()
+                        ts_str = datetime.fromisoformat(normalized.replace('Z', '+00:00')).astimezone(timezone.utc).replace(tzinfo=None).isoformat()
                     except Exception:
                         ts_str = ts_raw
 
@@ -1746,7 +1760,11 @@ ZEEK_DISPATCH = {
  }
 
 
-def ingest_all(data_root: Path, db: DBv2):
+def ingest_all(data_root: Path, db: DBv2, main_db=None, project_id: str = ''):
+    """Ingest all files under data_root into db.
+    If main_db is provided, events are also written there with project_id stamped
+    (enabling the main DB to act as a merged corpus across all projects).
+    """
     total = 0
     file_count = 0
 
@@ -1758,12 +1776,20 @@ def ingest_all(data_root: Path, db: DBv2):
             continue
 
         participant_id, scenario_name, host = parse_path_meta(file_path)
+        if not participant_id:
+            continue  # skip .orig dirs and unrecognized paths
         fname = file_path.name
+
+        def _write(e: dict):
+            e['project_id'] = project_id
+            db.insert(e)
+            if main_db is not None:
+                main_db.insert(e)
 
         # Skip binary / large files
         if fname.endswith('.pcap') or fname.endswith('.ogv') or fname.endswith('.webm') or fname.endswith('.log.pcap'):
             # Register as media event
-            db.insert(make_event(
+            _write(make_event(
                 participant_id, scenario_name, host, 'media', file_path,
                 action_category='media',
                 action_name='video_recording' if fname.endswith('.ogv') else 'network_capture',
@@ -1777,7 +1803,7 @@ def ingest_all(data_root: Path, db: DBv2):
         if fname.endswith('.cast'):
             events = parse_cast(file_path, participant_id, scenario_name, host)
             for e in events:
-                db.insert(e)
+                _write(e)
                 total += 1
             file_count += 1
             logger.debug(f"cast: {file_path.name} -> {total} total")
@@ -1787,7 +1813,7 @@ def ingest_all(data_root: Path, db: DBv2):
         if re.match(r'UAT-.+\.tsv(\.\d+)?$', fname):
             events = parse_uat(file_path, participant_id, scenario_name, host)
             for e in events:
-                db.insert(e)
+                _write(e)
                 total += 1
             file_count += 1
             continue
@@ -1800,7 +1826,7 @@ def ingest_all(data_root: Path, db: DBv2):
                 parser_fn = ZEEK_DISPATCH[fname]
             events = parser_fn(file_path, participant_id, scenario_name, host)
             for e in events:
-                db.insert(e)
+                _write(e)
                 total += 1
             file_count += 1
             if file_count % 20 == 0:
@@ -1811,7 +1837,7 @@ def ingest_all(data_root: Path, db: DBv2):
         if file_path.parent.name == 'zeek' and fname in ZEEK_DISPATCH:
             events = ZEEK_DISPATCH[fname](file_path, participant_id, scenario_name, host)
             for e in events:
-                db.insert(e)
+                _write(e)
                 total += 1
             file_count += 1
             continue
@@ -1820,7 +1846,7 @@ def ingest_all(data_root: Path, db: DBv2):
         if fname == 'apt.log':
             events = parse_apt_log(file_path, participant_id, scenario_name, host)
             for e in events:
-                db.insert(e)
+                _write(e)
                 total += 1
             file_count += 1
             continue
@@ -1830,12 +1856,14 @@ def ingest_all(data_root: Path, db: DBv2):
             # Parse as syslog-like
             events = parse_syslog(file_path, participant_id, scenario_name, host)
             for e in events:
-                db.insert(e)
+                _write(e)
                 total += 1
             file_count += 1
             continue
 
     db.flush()
+    if main_db is not None:
+        main_db.flush()
     return total, file_count
 
 
@@ -1868,21 +1896,41 @@ if __name__ == '__main__':
 
     db = DBv2(DB_PATH_RUN)
 
+    # Open main DB for dual-write (merged corpus) if --project-id + --main-db provided.
+    # First clean previous data for this project from main DB so re-ingests are idempotent.
+    main_db_instance = None
+    if args.project_id and args.main_db and args.main_db.exists():
+        try:
+            _mcon = sqlite3.connect(str(args.main_db))
+            # Ensure project_id column exists (migration for older DBs)
+            cols = {r[1] for r in _mcon.execute("PRAGMA table_info(events)").fetchall()}
+            if 'project_id' not in cols:
+                _mcon.execute("ALTER TABLE events ADD COLUMN project_id TEXT DEFAULT ''")
+                _mcon.execute("CREATE INDEX IF NOT EXISTS idx_project ON events(project_id, timestamp_utc)")
+            _mcon.execute("DELETE FROM events WHERE project_id=?", (args.project_id,))
+            _mcon.commit()
+            _mcon.close()
+            main_db_instance = DBv2(args.main_db)
+        except Exception as e:
+            logger.warning(f"Could not open main DB for dual-write: {e}")
+
     # Update project status to 'ingesting' if called from the API
     def _update_project_status(status: str):
         if args.project_id and args.main_db and args.main_db.exists():
             try:
                 con = sqlite3.connect(str(args.main_db))
                 con.execute("UPDATE projects SET status=?, updated_at=? WHERE project_id=?",
-                            (status, datetime.utcnow().isoformat(), args.project_id))
+                            (status, datetime.now(timezone.utc).replace(tzinfo=None).isoformat(), args.project_id))
                 con.commit()
                 con.close()
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning(f"Could not update project status: {e}")
 
     _update_project_status('ingesting')
     try:
-        total_events, total_files = ingest_all(DATA_ROOT_RUN, db)
+        total_events, total_files = ingest_all(DATA_ROOT_RUN, db,
+                                               main_db=main_db_instance,
+                                               project_id=args.project_id)
         logger.info(f"Ingestion complete: {total_events} events from {total_files} files")
         _update_project_status('ready')
     except Exception as exc:
@@ -1890,6 +1938,8 @@ if __name__ == '__main__':
         raise
     finally:
         db.close()
+        if main_db_instance:
+            main_db_instance.close()
 
     # Print summary stats
     db2 = DBv2(DB_PATH_RUN)
