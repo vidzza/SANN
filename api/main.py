@@ -1,6 +1,5 @@
 """
-GOD EYE - V2 API
-FastAPI server backed by godeye_v2.db
+SANN API — FastAPI server backed by godeye_v2.db
 """
 
 import csv
@@ -37,8 +36,8 @@ FRONTEND_PATH = Path(__file__).parent.parent / "frontend"
 MEDIA_ROOT = Path(_os.environ.get('GODEYE_DATA_ROOT', '/tmp/obsidian_full/P003'))
 
 app = FastAPI(
-    title="GOD EYE API v2",
-    description="Cybersecurity Scenario Analytics - GOD EYE Platform",
+    title="SANN API",
+    description="SANN — Cybersecurity Scenario Analytics Platform",
     version="2.0.0",
 )
 
@@ -51,6 +50,60 @@ app.add_middleware(
 
 
 # ---------------------------------------------------------------------------
+# Startup — ensure all required tables exist in the DB
+# ---------------------------------------------------------------------------
+
+_BOOTSTRAP_SQL = [
+    """CREATE TABLE IF NOT EXISTS projects (
+        project_id   TEXT PRIMARY KEY,
+        name         TEXT NOT NULL,
+        description  TEXT DEFAULT '',
+        project_type TEXT NOT NULL,
+        data_path    TEXT DEFAULT '',
+        filter_json  TEXT DEFAULT '{}',
+        db_path      TEXT DEFAULT '',
+        attacker_ips TEXT DEFAULT '',
+        created_at   TEXT,
+        updated_at   TEXT,
+        event_count  INTEGER DEFAULT 0,
+        status       TEXT DEFAULT 'ready'
+    )""",
+    """CREATE TABLE IF NOT EXISTS media_registry (
+        media_id         TEXT PRIMARY KEY,
+        participant_id   TEXT,
+        scenario_name    TEXT,
+        media_type       TEXT,
+        source_file      TEXT,
+        source_host      TEXT,
+        start_timestamp  TEXT,
+        start_unix       REAL,
+        end_timestamp    TEXT,
+        end_unix         REAL,
+        duration_seconds REAL,
+        panel            TEXT
+    )""",
+]
+
+
+@app.on_event("startup")
+async def _bootstrap_db():
+    if not DB_PATH.exists():
+        return
+    try:
+        con = sqlite3.connect(str(DB_PATH))
+        for sql in _BOOTSTRAP_SQL:
+            con.execute(sql)
+        # Migrate: add attacker_ips column if missing
+        cols = {r[1] for r in con.execute("PRAGMA table_info(projects)").fetchall()}
+        if "attacker_ips" not in cols:
+            con.execute("ALTER TABLE projects ADD COLUMN attacker_ips TEXT DEFAULT ''")
+        con.commit()
+        con.close()
+    except Exception:
+        pass
+
+
+# ---------------------------------------------------------------------------
 # DB helper
 # ---------------------------------------------------------------------------
 
@@ -60,8 +113,34 @@ def get_con() -> sqlite3.Connection:
     return con
 
 
+def get_project_con(project_id: str = "") -> sqlite3.Connection:
+    """Return connection to project DB if project_id given and DB exists, else main DB."""
+    if project_id:
+        try:
+            con = sqlite3.connect(str(DB_PATH))
+            row = con.execute("SELECT db_path FROM projects WHERE project_id=?", (project_id,)).fetchone()
+            con.close()
+            if row and row[0] and Path(row[0]).exists():
+                pc = sqlite3.connect(row[0])
+                pc.row_factory = sqlite3.Row
+                return pc
+        except Exception:
+            pass
+    return get_con()
+
+
 def q(sql: str, params = ()) -> List[dict]:
     con = get_con()
+    try:
+        cur = con.execute(sql, params)
+        return [dict(r) for r in cur.fetchall()]
+    finally:
+        con.close()
+
+
+def qp(project_id: str, sql: str, params = ()) -> List[dict]:
+    """Like q() but uses project DB when project_id is provided."""
+    con = get_project_con(project_id)
     try:
         cur = con.execute(sql, params)
         return [dict(r) for r in cur.fetchall()]
@@ -75,7 +154,7 @@ def q(sql: str, params = ()) -> List[dict]:
 
 @app.get("/")
 async def root():
-    return {"platform": "GOD EYE", "version": "2.0.0"}
+    return {"platform": "SANN", "version": "2.0.0"}
 
 
 @app.get("/api/health")
@@ -92,9 +171,9 @@ async def health():
 # ---------------------------------------------------------------------------
 
 @app.get("/api/participants")
-async def get_participants():
+async def get_participants(project_id: str = ""):
     """List all participants with event counts and phase coverage."""
-    rows = q("""
+    rows = qp(project_id, """
         SELECT
             participant_id,
             scenario_name,
@@ -112,7 +191,7 @@ async def get_participants():
     """)
 
     # Add phase breakdown per participant
-    phases = q("""
+    phases = qp(project_id, """
         SELECT participant_id, attack_phase, COUNT(*) as n
         FROM events
         GROUP BY participant_id, attack_phase
@@ -705,16 +784,16 @@ async def get_media(participant_id: Optional[str] = None):
 # ---------------------------------------------------------------------------
 
 @app.get("/api/stats")
-async def get_stats():
-    total = q("SELECT COUNT(*) n FROM events")[0]["n"]
-    by_participant = q("SELECT participant_id, COUNT(*) n FROM events GROUP BY participant_id ORDER BY n DESC")
-    by_phase = q("SELECT attack_phase, COUNT(*) n FROM events GROUP BY attack_phase ORDER BY n DESC")
-    by_source = q("SELECT source_type, COUNT(*) n FROM events GROUP BY source_type ORDER BY n DESC")
-    by_category = q("SELECT action_category, COUNT(*) n FROM events GROUP BY action_category ORDER BY n DESC")
-    commands = q("SELECT COUNT(*) n FROM events WHERE command != '' AND command IS NOT NULL")[0]["n"]
-    typed = q("SELECT COUNT(*) n FROM events WHERE typed_text != '' AND typed_text IS NOT NULL")[0]["n"]
-    alerts = q("SELECT COUNT(*) n FROM events WHERE alert_type != '' AND alert_type IS NOT NULL")[0]["n"]
-    time_range = q("SELECT MIN(timestamp_utc) t0, MAX(timestamp_utc) t1 FROM events WHERE timestamp_utc != '' AND timestamp_utc IS NOT NULL")[0]
+async def get_stats(project_id: str = ""):
+    total = qp(project_id, "SELECT COUNT(*) n FROM events")[0]["n"]
+    by_participant = qp(project_id, "SELECT participant_id, COUNT(*) n FROM events GROUP BY participant_id ORDER BY n DESC")
+    by_phase = qp(project_id, "SELECT attack_phase, COUNT(*) n FROM events GROUP BY attack_phase ORDER BY n DESC")
+    by_source = qp(project_id, "SELECT source_type, COUNT(*) n FROM events GROUP BY source_type ORDER BY n DESC")
+    by_category = qp(project_id, "SELECT action_category, COUNT(*) n FROM events GROUP BY action_category ORDER BY n DESC")
+    commands = qp(project_id, "SELECT COUNT(*) n FROM events WHERE command != '' AND command IS NOT NULL")[0]["n"]
+    typed = qp(project_id, "SELECT COUNT(*) n FROM events WHERE typed_text != '' AND typed_text IS NOT NULL")[0]["n"]
+    alerts = qp(project_id, "SELECT COUNT(*) n FROM events WHERE alert_type != '' AND alert_type IS NOT NULL")[0]["n"]
+    time_range = qp(project_id, "SELECT MIN(timestamp_utc) t0, MAX(timestamp_utc) t1 FROM events WHERE timestamp_utc != '' AND timestamp_utc IS NOT NULL")[0]
 
     return {
         "total_events": total,
@@ -772,14 +851,15 @@ async def search(
 # ---------------------------------------------------------------------------
 
 @app.get("/api/events/stream")
-async def events_stream_early(
+async def events_stream(
     participant_id: str,
     from_ts: Optional[str] = None,
     to_ts: Optional[str] = None,
     source_type: Optional[str] = None,
     limit: int = 500,
+    project_id: str = "",
 ):
-    """Windowed event query for Palantir UI (registered early to avoid {event_id} conflict)."""
+    """Windowed event query for Palantir UI. Registered before {event_id} to avoid route conflict."""
     conds = ["participant_id = ?", "timestamp_utc != ''", "timestamp_utc IS NOT NULL"]
     params: list = [participant_id]
     if source_type:
@@ -794,7 +874,8 @@ async def events_stream_early(
         conds.append("timestamp_utc <= ?")
         params.append(to_ts)
     where = " AND ".join(conds)
-    rows = q(
+    rows = qp(
+        project_id,
         f"""SELECT timestamp_utc, source_type, action_name, command, typed_text,
                    user, source_host, attack_phase, src_ip, dest_ip, dest_port,
                    protocol, alert_type, alert_severity, url, http_method,
@@ -921,6 +1002,7 @@ class ProjectCreate(BaseModel):
     project_type: str          # "dataset" or "filter"
     data_path: str = ""        # for dataset type
     filter_json: dict = {}     # for filter type
+    attacker_ips: str = ""     # comma-separated IPs for sensor_packet classification
 
 
 def _project_db_path(project_id: str) -> Path:
@@ -1002,6 +1084,7 @@ def list_projects():
             "data_path": r["data_path"],
             "filter_json": fj,
             "db_path": r["db_path"],
+            "attacker_ips": r["attacker_ips"] or "",
             "created_at": r["created_at"],
             "updated_at": r["updated_at"],
             "event_count": cnt,
@@ -1026,10 +1109,10 @@ def create_project(body: ProjectCreate):
     con = sqlite3.connect(str(DB_PATH))
     con.execute(
         """INSERT INTO projects
-           (project_id, name, description, project_type, data_path, filter_json, db_path, created_at, updated_at, event_count, status)
-           VALUES (?,?,?,?,?,?,?,?,?,0,'ready')""",
+           (project_id, name, description, project_type, data_path, filter_json, db_path, attacker_ips, created_at, updated_at, event_count, status)
+           VALUES (?,?,?,?,?,?,?,?,?,?,0,'ready')""",
         (pid, body.name, body.description, body.project_type,
-         body.data_path, json.dumps(body.filter_json), db_path_str, now, now),
+         body.data_path, json.dumps(body.filter_json), db_path_str, body.attacker_ips, now, now),
     )
     con.commit()
     con.close()
@@ -1058,6 +1141,7 @@ def get_project(project_id: str):
         "data_path": row["data_path"],
         "filter_json": fj,
         "db_path": row["db_path"],
+        "attacker_ips": row["attacker_ips"] or "",
         "created_at": row["created_at"],
         "updated_at": row["updated_at"],
         "event_count": cnt,
@@ -1273,17 +1357,18 @@ def ingest_project(project_id: str):
         raise HTTPException(400, "Only dataset projects can be ingested")
     data_path = row["data_path"]
     db_path_str = row["db_path"] or str(_project_db_path(project_id))
+    attacker_ips = row["attacker_ips"] or ""
     con.execute("UPDATE projects SET status='ingesting', updated_at=? WHERE project_id=?",
                 (datetime.now(timezone.utc).isoformat(), project_id))
     con.commit()
     con.close()
 
     ingest_script = str(Path(__file__).parent.parent / "ingest_v2.py")
-    subprocess.Popen(
-        ["python3", ingest_script, "--data-dir", data_path, "--db", db_path_str,
-         "--project-id", project_id, "--main-db", str(DB_PATH)],
-        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-    )
+    cmd = ["python3", ingest_script, "--data-dir", data_path, "--db", db_path_str,
+           "--project-id", project_id, "--main-db", str(DB_PATH)]
+    if attacker_ips:
+        cmd += ["--attacker-ips", attacker_ips]
+    subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     return {"status": "ingesting", "project_id": project_id, "db_path": db_path_str}
 
 
@@ -1460,7 +1545,7 @@ async def timeline_uat(
     
     where = " AND ".join(conds)
     keystrokes = q(f"""
-        SELECT timestamp_utc, typed_text, window, tool
+        SELECT timestamp_utc, typed_text, tool, raw_data
         FROM events
         WHERE {where}
         ORDER BY timestamp_utc
@@ -1713,59 +1798,13 @@ async def timeline_playback(
     return result
 
 
-# ---------------------------------------------------------------------------
-# Dashboard API — clean endpoints for Palantir UI
-# ---------------------------------------------------------------------------
-
-@app.get("/api/events/stream")
-async def events_stream(
-    participant_id: str,
-    from_ts: Optional[str] = None,
-    to_ts: Optional[str] = None,
-    source_type: Optional[str] = None,
-    limit: int = 500,
-):
-    """
-    Return events for a participant, optionally filtered by time window and source_type.
-    All timestamps are ISO UTC strings. Returns events sorted by timestamp_utc.
-    """
-    conds = ["participant_id = ?", "timestamp_utc != ''", "timestamp_utc IS NOT NULL"]
-    params: list = [participant_id]
-
-    if source_type:
-        # support comma-separated list
-        types = [t.strip() for t in source_type.split(",") if t.strip()]
-        placeholders = ",".join(["?"] * len(types))
-        conds.append(f"source_type IN ({placeholders})")
-        params.extend(types)
-    if from_ts:
-        conds.append("timestamp_utc >= ?")
-        params.append(from_ts)
-    if to_ts:
-        conds.append("timestamp_utc <= ?")
-        params.append(to_ts)
-
-    where = " AND ".join(conds)
-    rows = q(
-        f"""SELECT timestamp_utc, source_type, action_name, command, typed_text,
-                   user, source_host, attack_phase, src_ip, dest_ip, dest_port,
-                   protocol, alert_type, alert_severity, url, http_method,
-                   http_status, tool, working_dir, mitre_tactic, mitre_technique
-            FROM events
-            WHERE {where}
-            ORDER BY timestamp_utc
-            LIMIT ?""",
-        tuple(params + [limit]),
-    )
-    return {"events": rows, "count": len(rows)}
-
-
 @app.get("/api/timeline/phases")
 async def timeline_phases(
     participant_id: str,
     buckets: int = 200,
     from_ts: str | None = None,
     to_ts: str | None = None,
+    project_id: str = "",
 ):
     """
     Return a bucketed timeline of event counts per attack_phase.
@@ -1805,7 +1844,7 @@ async def timeline_phases(
         params.append(to_ts)
     sql += " ORDER BY timestamp_utc"
 
-    rows = q(sql, tuple(params))
+    rows = qp(project_id, sql, tuple(params))
 
     if not rows:
         return {"buckets": [], "start_ts": from_ts, "end_ts": to_ts,

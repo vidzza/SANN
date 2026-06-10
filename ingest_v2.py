@@ -1,17 +1,9 @@
 """
-GOD EYE - V2 Comprehensive Ingestion Engine
-Full re-process with:
-- Participant tracking (user0003/user2003/user4002)
-- Attack phase classification (MITRE ATT&CK)
-- Clean user extraction
-- Command extraction from all sources
-- Typed text reconstruction from UAT keystrokes
-- Terminal command extraction from .cast files
-- bt.jsonl message parsing
-- sensor.log packet analysis
-- Phase timeline per participant
+SANN - Comprehensive Ingestion Engine v2
+Ingests raw CTF/Red Team telemetry into SQLite with MITRE ATT&CK classification.
 """
 
+import argparse
 import json
 import re
 import sys
@@ -26,9 +18,6 @@ from typing import Iterator, Dict, List, Optional, Tuple
 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
 logger = logging.getLogger(__name__)
 
-# Rutas configurables via variables de entorno o .env
-# GODEYE_DATA_ROOT  — carpeta raíz del dataset (contiene user*/...)
-# GODEYE_DB_PATH    — ruta al archivo SQLite (se crea si no existe)
 def _load_env_file():
     env_file = Path(__file__).parent / '.env'
     if env_file.exists():
@@ -45,6 +34,13 @@ import os as _os
 DATA_ROOT = Path(_os.environ.get('GODEYE_DATA_ROOT', '/tmp/obsidian_full/P003'))
 DB_PATH   = Path(_os.environ.get('GODEYE_DB_PATH',
                  str(Path(__file__).parent / 'data' / 'godeye_v2.db')))
+
+# Comma-separated attacker IPs used for sensor_packet C2 classification.
+# Override via GODEYE_ATTACKER_IPS env var for datasets other than P003.
+_ATTACKER_IPS_ENV = _os.environ.get('GODEYE_ATTACKER_IPS', '')
+ATTACKER_IPS = tuple(
+    ip.strip() for ip in _ATTACKER_IPS_ENV.split(',') if ip.strip()
+) if _ATTACKER_IPS_ENV else ('122.10.11.101', '122.10.11.102', '114.0.194.2', '114.231.10.3')
 
 # ---------------------------------------------------------------------------
 # MITRE ATT&CK Phase classification
@@ -134,8 +130,7 @@ def classify_phase(command: str, action_name: str, tool: str, raw_data: str = ''
     if action_name == 'sensor_packet':
         # TODO: attacker_ips is hardcoded for P003 dataset. Make this configurable
         # via .env or a config file so classification works across different datasets.
-        attacker_ips = ('122.10.11.101', '122.10.11.102', '114.0.194.2', '114.231.10.3')
-        if any(ip in raw_data for ip in attacker_ips):
+        if any(ip in raw_data for ip in ATTACKER_IPS):
             return 'command_and_control', 'TA0011', 'T1071'
         if 'sec-workstation' in raw:
             return 'discovery', 'TA0007', 'T1046'
@@ -606,7 +601,7 @@ def parse_path_meta(file_path: Path):
     """Extract participant_id, scenario_name, host from file path.
 
     Rules (structure-agnostic):
-      - participant_id : first path component matching user\w+ (any variant)
+      - participant_id : first path component matching user\\w+ (any variant)
       - scenario_name  : first non-numeric component immediately after participant_id
                          (whatever it is — no whitelist)
       - host           : immediate parent directory of the file
@@ -616,10 +611,10 @@ def parse_path_meta(file_path: Path):
     participant_id = ''
     scenario_name = ''
 
-    # Find participant dir — any component starting with 'user' followed by alphanumerics
+    # Find participant dir — matches user<alphanum>[.orig] patterns
     pid_idx = None
     for i, part in enumerate(parts):
-        if re.match(r'user\w+$', part, re.IGNORECASE):
+        if re.match(r'user[\w.]+$', part, re.IGNORECASE):
             participant_id = part
             pid_idx = i
             break
@@ -1052,45 +1047,37 @@ def parse_syslog(file_path: Path, participant_id, scenario_name, host) -> Iterat
         logger.debug(f"syslog parse error {file_path}: {e}")
 
 
-# ---- zeek conn.log parser ----
+# ---- zeek conn.log parser (JSONL format) ----
 def parse_zeek_conn(file_path: Path, participant_id, scenario_name, host) -> Iterator[dict]:
-    fields = []
     try:
         with open(file_path, 'r', errors='ignore') as f:
             for line in f:
                 line = line.strip()
-                if line.startswith('#fields'):
-                    fields = line.split('\t')[1:]
+                if not line or line.startswith('#'):
                     continue
-                if line.startswith('#') or not line:
+                try:
+                    data = json.loads(line)
+                except Exception:
                     continue
-                if not fields:
-                    continue
-                parts = line.split('\t')
-                row = dict(zip(fields, parts))
 
-                ts_float = float(row.get('ts', 0) or 0)
+                ts_float = float(data.get('ts', 0) or 0)
                 ts_str = datetime.utcfromtimestamp(ts_float).isoformat() if ts_float else ''
 
-                src_ip = row.get('id.orig_h', '')
-                src_port = int(row.get('id.orig_p', 0) or 0)
-                dst_ip = row.get('id.resp_h', '')
-                dst_port = int(row.get('id.resp_p', 0) or 0)
-                proto = row.get('proto', '')
-                service = row.get('service', '')
-                duration = row.get('duration', '')
-                conn_state = row.get('conn_state', '')
-
-                action_name = 'flow'
-                action_cat = 'network'
-                tool = 'zeek'
+                src_ip = data.get('id.orig_h', '')
+                src_port = int(data.get('id.orig_p', 0) or 0)
+                dst_ip = data.get('id.resp_h', '')
+                dst_port = int(data.get('id.resp_p', 0) or 0)
+                proto = data.get('proto', '')
+                service = data.get('service', '')
+                duration = data.get('duration', '')
+                conn_state = data.get('conn_state', '')
 
                 yield make_event(
                     participant_id, scenario_name, host, 'zeek', file_path,
                     timestamp_utc=ts_str,
-                    action_category=action_cat,
-                    action_name=action_name,
-                    tool=tool,
+                    action_category='network',
+                    action_name='flow',
+                    tool='zeek',
                     src_ip=src_ip, src_port=src_port,
                     dest_ip=dst_ip, dest_port=dst_port,
                     protocol=proto,
@@ -1102,22 +1089,18 @@ def parse_zeek_conn(file_path: Path, participant_id, scenario_name, host) -> Ite
 
 
 def parse_zeek_http(file_path: Path, participant_id, scenario_name, host) -> Iterator[dict]:
-    fields = []
     try:
         with open(file_path, 'r', errors='ignore') as f:
             for line in f:
                 line = line.strip()
-                if line.startswith('#fields'):
-                    fields = line.split('\t')[1:]
+                if not line or line.startswith('#'):
                     continue
-                if line.startswith('#') or not line:
+                try:
+                    data = json.loads(line)
+                except Exception:
                     continue
-                if not fields:
-                    continue
-                parts = line.split('\t')
-                row = dict(zip(fields, parts))
 
-                ts_float = float(row.get('ts', 0) or 0)
+                ts_float = float(data.get('ts', 0) or 0)
                 ts_str = datetime.utcfromtimestamp(ts_float).isoformat() if ts_float else ''
 
                 yield make_event(
@@ -1126,13 +1109,13 @@ def parse_zeek_http(file_path: Path, participant_id, scenario_name, host) -> Ite
                     action_category='web_access',
                     action_name='http_request',
                     tool='zeek',
-                    src_ip=row.get('id.orig_h', ''),
-                    dest_ip=row.get('id.resp_h', ''),
-                    dest_port=int(row.get('id.resp_p', 0) or 0),
-                    http_method=row.get('method', ''),
-                    url=row.get('uri', ''),
-                    user_agent=row.get('user_agent', ''),
-                    http_status=int(row.get('status_code', 0) or 0),
+                    src_ip=data.get('id.orig_h', ''),
+                    dest_ip=data.get('id.resp_h', ''),
+                    dest_port=int(data.get('id.resp_p', 0) or 0),
+                    http_method=data.get('method', ''),
+                    url=data.get('uri', ''),
+                    user_agent=data.get('user_agent', ''),
+                    http_status=int(data.get('status_code', 0) or 0),
                     raw_data=line,
                 )
     except Exception as e:
@@ -1140,35 +1123,31 @@ def parse_zeek_http(file_path: Path, participant_id, scenario_name, host) -> Ite
 
 
 def parse_zeek_ssh(file_path: Path, participant_id, scenario_name, host) -> Iterator[dict]:
-    fields = []
     try:
         with open(file_path, 'r', errors='ignore') as f:
             for line in f:
                 line = line.strip()
-                if line.startswith('#fields'):
-                    fields = line.split('\t')[1:]
+                if not line or line.startswith('#'):
                     continue
-                if line.startswith('#') or not line:
+                try:
+                    data = json.loads(line)
+                except Exception:
                     continue
-                if not fields:
-                    continue
-                parts = line.split('\t')
-                row = dict(zip(fields, parts))
 
-                ts_float = float(row.get('ts', 0) or 0)
+                ts_float = float(data.get('ts', 0) or 0)
                 ts_str = datetime.utcfromtimestamp(ts_float).isoformat() if ts_float else ''
-                auth_success = row.get('auth_success', '-')
-                
+                auth_success = data.get('auth_success', False)
+
                 yield make_event(
                     participant_id, scenario_name, host, 'zeek', file_path,
                     timestamp_utc=ts_str,
                     action_category='authentication',
                     action_name='ssh_session',
                     tool='ssh',
-                    src_ip=row.get('id.orig_h', ''),
-                    dest_ip=row.get('id.resp_h', ''),
-                    dest_port=int(row.get('id.resp_p', 22) or 22),
-                    result='success' if auth_success == 'T' else 'failure',
+                    src_ip=data.get('id.orig_h', ''),
+                    dest_ip=data.get('id.resp_h', ''),
+                    dest_port=int(data.get('id.resp_p', 22) or 22),
+                    result='success' if auth_success is True or auth_success == 'true' else 'failure',
                     raw_data=line,
                 )
     except Exception as e:
@@ -1176,25 +1155,21 @@ def parse_zeek_ssh(file_path: Path, participant_id, scenario_name, host) -> Iter
 
 
 def parse_zeek_dns(file_path: Path, participant_id, scenario_name, host) -> Iterator[dict]:
-    fields = []
     try:
         with open(file_path, 'r', errors='ignore') as f:
             for line in f:
                 line = line.strip()
-                if line.startswith('#fields'):
-                    fields = line.split('\t')[1:]
+                if not line or line.startswith('#'):
                     continue
-                if line.startswith('#') or not line:
+                try:
+                    data = json.loads(line)
+                except Exception:
                     continue
-                if not fields:
-                    continue
-                parts = line.split('\t')
-                row = dict(zip(fields, parts))
 
-                ts_float = float(row.get('ts', 0) or 0)
+                ts_float = float(data.get('ts', 0) or 0)
                 ts_str = datetime.utcfromtimestamp(ts_float).isoformat() if ts_float else ''
-                query = row.get('query', '')
-                qtype = row.get('qtype_name', '')
+                query = data.get('query', '')
+                qtype = data.get('qtype_name', '')
 
                 yield make_event(
                     participant_id, scenario_name, host, 'zeek', file_path,
@@ -1202,7 +1177,7 @@ def parse_zeek_dns(file_path: Path, participant_id, scenario_name, host) -> Iter
                     action_category='network',
                     action_name='dns_query',
                     tool='zeek',
-                    src_ip=row.get('id.orig_h', ''),
+                    src_ip=data.get('id.orig_h', ''),
                     command=f"DNS {qtype} {query}",
                     url=query,
                     raw_data=line,
@@ -1865,24 +1840,59 @@ def ingest_all(data_root: Path, db: DBv2):
 
 
 if __name__ == '__main__':
-    logger.info("GOD EYE V2 - Full Re-ingestion")
-    logger.info(f"Data root: {DATA_ROOT}")
-    logger.info(f"Database: {DB_PATH}")
+    parser = argparse.ArgumentParser(description='SANN Ingestion Engine')
+    parser.add_argument('--data-dir', type=Path, default=DATA_ROOT,
+                        help='Root directory of the dataset (contains user*/...)')
+    parser.add_argument('--db', type=Path, default=DB_PATH,
+                        help='Output SQLite database path')
+    parser.add_argument('--project-id', default='', help='Project ID (for multi-dataset use)')
+    parser.add_argument('--main-db', type=Path, default=None,
+                        help='Main SANN database (for project status updates)')
+    parser.add_argument('--attacker-ips', default='',
+                        help='Comma-separated attacker IPs for sensor_packet classification')
+    args = parser.parse_args()
 
-    if DB_PATH.exists():
-        logger.info("Removing existing v2 database...")
-        DB_PATH.unlink()
+    DATA_ROOT_RUN = args.data_dir
+    DB_PATH_RUN   = args.db
 
-    db = DBv2(DB_PATH)
+    if args.attacker_ips:
+        ATTACKER_IPS = tuple(ip.strip() for ip in args.attacker_ips.split(',') if ip.strip())
 
+    logger.info("SANN - Full Ingestion")
+    logger.info(f"Data root: {DATA_ROOT_RUN}")
+    logger.info(f"Database: {DB_PATH_RUN}")
+
+    if DB_PATH_RUN.exists():
+        logger.info("Removing existing database...")
+        DB_PATH_RUN.unlink()
+
+    db = DBv2(DB_PATH_RUN)
+
+    # Update project status to 'ingesting' if called from the API
+    def _update_project_status(status: str):
+        if args.project_id and args.main_db and args.main_db.exists():
+            try:
+                con = sqlite3.connect(str(args.main_db))
+                con.execute("UPDATE projects SET status=?, updated_at=? WHERE project_id=?",
+                            (status, datetime.utcnow().isoformat(), args.project_id))
+                con.commit()
+                con.close()
+            except Exception:
+                pass
+
+    _update_project_status('ingesting')
     try:
-        total_events, total_files = ingest_all(DATA_ROOT, db)
+        total_events, total_files = ingest_all(DATA_ROOT_RUN, db)
         logger.info(f"Ingestion complete: {total_events} events from {total_files} files")
+        _update_project_status('ready')
+    except Exception as exc:
+        _update_project_status('error')
+        raise
     finally:
         db.close()
 
     # Print summary stats
-    db2 = DBv2(DB_PATH)
+    db2 = DBv2(DB_PATH_RUN)
     stats = db2.query("SELECT COUNT(*) as n FROM events")[0]['n']
     phases = db2.query("SELECT attack_phase, COUNT(*) as n FROM events GROUP BY attack_phase ORDER BY n DESC")
     participants = db2.query("SELECT participant_id, COUNT(*) as n FROM events GROUP BY participant_id ORDER BY n DESC")
@@ -1891,7 +1901,7 @@ if __name__ == '__main__':
     typed = db2.query("SELECT COUNT(*) as n FROM events WHERE typed_text != '' AND typed_text IS NOT NULL")[0]['n']
 
     print(f"\n{'='*60}")
-    print(f"GOD EYE V2 DATABASE SUMMARY")
+    print(f"SANN DATABASE SUMMARY")
     print(f"{'='*60}")
     print(f"Total events   : {stats:,}")
     print(f"With commands  : {commands:,}")

@@ -1,17 +1,15 @@
 #!/usr/bin/env python3
 """
-GOD EYE - Dataset Import Manager
-=================================
-Run this after every ingest (or instead of raw ingest_v2.py) to ensure:
-  1. media_registry is rebuilt correctly from filesystem
-  2. Suricata timestamps are converted from local-tz to UTC
-  3. syslog/auth timestamps use the correct year (inferred from cast headers)
-  4. Post-import validation confirms all panels have data in expected windows
+SANN - Dataset Import Manager
+
+Run after every ingest (or instead of raw ingest_v2.py) to:
+  1. Rebuild media_registry from filesystem
+  2. Fix Suricata timestamps (local-tz → UTC)
+  3. Fix syslog/auth year (inferred from cast headers)
+  4. Validate all panels have data in the video window
 
 Usage:
     python3 import_manager.py [--data-root PATH] [--db PATH] [--skip-ingest]
-
-    --skip-ingest   Skip running ingest_v2.py (use existing DB, just fix + validate)
 """
 
 import argparse
@@ -90,9 +88,11 @@ def get_video_duration(webm: Path) -> float | None:
 # ---------------------------------------------------------------------------
 
 def run_ingest(data_root: Path, db_path: Path):
-    log.info("Running ingest_v2.py ...")
+    log.info(f"Running ingest_v2.py  data-dir={data_root}  db={db_path} ...")
     result = subprocess.run(
-        [sys.executable, str(INGEST_SCRIPT)],
+        [sys.executable, str(INGEST_SCRIPT),
+         '--data-dir', str(data_root),
+         '--db', str(db_path)],
         timeout=600
     )
     if result.returncode != 0:
@@ -531,7 +531,7 @@ def validate(con: sqlite3.Connection) -> bool:
 # ---------------------------------------------------------------------------
 
 def main():
-    parser = argparse.ArgumentParser(description='GOD EYE Dataset Import Manager')
+    parser = argparse.ArgumentParser(description='SANN Dataset Import Manager')
     parser.add_argument('--data-root', type=Path, default=DATA_ROOT)
     parser.add_argument('--db',        type=Path, default=DB_PATH)
     parser.add_argument('--skip-ingest', action='store_true',
@@ -539,7 +539,7 @@ def main():
     args = parser.parse_args()
 
     log.info("=" * 60)
-    log.info("GOD EYE Import Manager")
+    log.info("SANN Import Manager")
     log.info(f"  data-root : {args.data_root}")
     log.info(f"  db        : {args.db}")
     log.info("=" * 60)

@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>GOD EYE — Threat Intelligence</title>
+<title>SANN — Threat Intelligence</title>
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/asciinema-player@3.7.0/dist/bundle/asciinema-player.min.css">
 <script src="https://cdn.jsdelivr.net/npm/asciinema-player@3.7.0/dist/bundle/asciinema-player.min.js"></script>
 <style>
@@ -286,12 +286,17 @@ label.tb-label { color: var(--text-dim); font-size: 11px; white-space: nowrap; }
 <!-- LOADING OVERLAY -->
 <div id="loading-overlay">
   <div class="spinner"></div>
-  <div id="loading-text">INITIALIZING GOD EYE...</div>
+  <div id="loading-text">INITIALIZING SANN...</div>
 </div>
 
 <!-- TOPBAR -->
 <div id="topbar">
-  <span class="logo">&#9632; GOD EYE</span>
+  <span class="logo">&#9632; SANN</span>
+  <span class="tb-sep">|</span>
+
+  <label class="tb-label">PROJECT</label>
+  <select id="sel-project"><option value="">Default</option></select>
+
   <span class="tb-sep">|</span>
 
   <label class="tb-label">PARTICIPANT</label>
@@ -467,6 +472,7 @@ label.tb-label { color: var(--text-dim); font-size: 11px; white-space: nowrap; }
 // STATE
 // ═══════════════════════════════════════════════════════════════════════════
 const S = {
+  projectId: '',           // active project_id ('' = default/main DB)
   participantId: null,
   videoMedia: null,        // media_registry row for video
   casts: [],               // array of cast media rows
@@ -544,20 +550,55 @@ function sevClass(sev) {
 // ═══════════════════════════════════════════════════════════════════════════
 // INIT
 // ═══════════════════════════════════════════════════════════════════════════
-async function init() {
-  setLoading('LOADING PARTICIPANTS...');
-  const resp = await fetch('/api/participants').catch(() => null);
-  if (!resp || !resp.ok) { setLoading('API UNAVAILABLE'); return; }
-  const data = await resp.json();
-  const sel = document.getElementById('sel-participant');
-  (data.participants || []).forEach(p => {
+async function loadProjects() {
+  const resp = await fetch('/api/projects').catch(() => null);
+  if (!resp || !resp.ok) return;
+  const projects = await resp.json();
+  const sel = document.getElementById('sel-project');
+  (projects || []).filter(p => p.status === 'ready' && p.event_count > 0).forEach(p => {
     const opt = document.createElement('option');
-    opt.value = p.participant_id;
-    opt.textContent = `${p.participant_id} — ${p.scenario_name || ''} (${(p.total_events||0).toLocaleString()} ev)`;
+    opt.value = p.project_id;
+    opt.textContent = `${p.name} (${(p.event_count||0).toLocaleString()} ev)`;
     sel.appendChild(opt);
   });
+}
+
+async function loadParticipantsForProject(projectId) {
+  const qs = projectId ? `?project_id=${projectId}` : '';
+  const resp = await fetch(`/api/participants${qs}`).catch(() => null);
+  if (!resp || !resp.ok) return [];
+  const data = await resp.json();
+  return data.participants || [];
+}
+
+async function init() {
+  setLoading('LOADING...');
+  await loadProjects();
+
+  const selProject = document.getElementById('sel-project');
+  const selPart = document.getElementById('sel-participant');
+
+  async function reloadParticipants() {
+    S.projectId = selProject.value;
+    // Reset participant selector
+    selPart.innerHTML = '<option value="">-- select --</option>';
+    const parts = await loadParticipantsForProject(S.projectId);
+    parts.forEach(p => {
+      const opt = document.createElement('option');
+      opt.value = p.participant_id;
+      opt.textContent = `${p.participant_id} — ${p.scenario_name || ''} (${(p.total_events||0).toLocaleString()} ev)`;
+      selPart.appendChild(opt);
+    });
+  }
+
+  await reloadParticipants();
   hideLoading();
 
+  selProject.addEventListener('change', async () => {
+    await reloadParticipants();
+  });
+
+  const sel = selPart;
   sel.addEventListener('change', () => loadParticipant(sel.value));
   document.getElementById('sel-cast').addEventListener('change', switchCast);
   document.getElementById('btn-playpause').addEventListener('click', togglePlay);
@@ -698,7 +739,8 @@ async function loadPhases() {
   // (which may span months of background syslog/auth data).
   const fromISO = epochToISO(S.globalStart);
   const toISO   = epochToISO(S.globalEnd);
-  const url = `/api/timeline/phases?participant_id=${S.participantId}&buckets=200&from_ts=${encodeURIComponent(fromISO)}&to_ts=${encodeURIComponent(toISO)}`;
+  const pidParam = S.projectId ? `&project_id=${S.projectId}` : '';
+  const url = `/api/timeline/phases?participant_id=${S.participantId}&buckets=200&from_ts=${encodeURIComponent(fromISO)}&to_ts=${encodeURIComponent(toISO)}${pidParam}`;
   const resp = await fetch(url).catch(() => null);
   if (!resp || !resp.ok) return;
   const d = await resp.json();
@@ -1103,9 +1145,10 @@ async function fetchAllPanels() {
     { key: 'pcap',      types: 'zeek,sensor',          limit: 80 },
   ];
 
+  const projParam = S.projectId ? `&project_id=${S.projectId}` : '';
   // Fire all fetches in parallel
   const fetches = sources.map(s =>
-    fetch(`/api/events/stream?participant_id=${pid}&source_type=${s.types}&from_ts=${from}&to_ts=${to}&limit=${s.limit}`, { signal: sig })
+    fetch(`/api/events/stream?participant_id=${pid}&source_type=${s.types}&from_ts=${from}&to_ts=${to}&limit=${s.limit}${projParam}`, { signal: sig })
       .then(r => r.json())
       .then(d => ({ key: s.key, events: d.events || [] }))
       .catch(() => ({ key: s.key, events: [] }))
