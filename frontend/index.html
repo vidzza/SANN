@@ -1952,6 +1952,9 @@ async function createProject() {
       source_types: selValues('projSourceTypes'),
     };
   }
+  const btn = document.querySelector('button[onclick="createProject()"]');
+  const originalLabel = btn ? btn.textContent : '';
+  if (btn) { btn.disabled = true; btn.textContent = 'Creating…'; }
   try {
     const r = await fetch(`${API}/api/projects`, {
       method: 'POST',
@@ -1959,10 +1962,33 @@ async function createProject() {
       body: JSON.stringify(body),
     });
     if (!r.ok) { const e = await r.json(); alert('Error: ' + (e.detail || r.status)); return; }
+    const created = await r.json();
     document.getElementById('projName').value = '';
     document.getElementById('projDesc').value = '';
     loadProjects();
-  } catch(e) { alert('Request failed: ' + e); }
+    if (created.status === 'extracting') {
+      if (btn) btn.textContent = 'Extracting archive…';
+      const pid = created.project_id;
+      const poll = setInterval(async () => {
+        try {
+          const sr = await fetch(`${API}/api/projects/${pid}/status`);
+          if (!sr.ok) return;
+          const sd = await sr.json();
+          if (sd.status === 'ready' || sd.status === 'error') {
+            clearInterval(poll);
+            if (btn) { btn.disabled = false; btn.textContent = originalLabel; }
+            loadProjects();
+            if (sd.status === 'error') alert('Archive extraction failed for project ' + pid);
+          }
+        } catch(_) {}
+      }, 2000);
+    } else {
+      if (btn) { btn.disabled = false; btn.textContent = originalLabel; }
+    }
+  } catch(e) {
+    alert('Request failed: ' + e);
+    if (btn) { btn.disabled = false; btn.textContent = originalLabel; }
+  }
 }
 
 async function loadProjects() {

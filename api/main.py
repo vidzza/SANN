@@ -1443,7 +1443,7 @@ def project_status(project_id: str):
             status = "ready"
         except Exception:
             pass
-    return {"project_id": project_id, "status": status, "event_count": cnt}
+    return {"project_id": project_id, "status": status, "event_count": cnt, "data_path": row["data_path"]}
 
 
 @app.get("/api/projects")
@@ -1497,6 +1497,7 @@ def create_project(body: ProjectCreate):
     pid = str(uuid.uuid4())[:8]
     now = datetime.now(timezone.utc).isoformat()
     data_path_final = body.data_path
+    archive_to_extract = None  # set when data_path is an archive — extracted in background
 
     if body.project_type == "dataset" and body.data_path:
         try:
@@ -1518,15 +1519,14 @@ def create_project(body: ProjectCreate):
                         400,
                         f"data_path must be a directory or a .zip/.tar/.tar.gz archive: {resolved.name}"
                     )
-                dest = (DB_PATH.parent / "uploads" / f"dataset_{pid}").resolve()
-                try:
-                    resolved = _extract_archive(resolved, dest)
-                except Exception as e:
-                    shutil.rmtree(str(dest), ignore_errors=True)
-                    raise HTTPException(400, f"Failed to extract archive: {e}")
+                # Don't extract in the request — large archives (GBs) can take minutes
+                # and would block the response. Defer to a background thread.
+                archive_to_extract = resolved
+                data_path_final = str((DB_PATH.parent / "uploads" / f"dataset_{pid}").resolve())
             elif not resolved.is_dir():
                 raise HTTPException(400, f"data_path is neither a directory nor a file: {resolved}")
-            data_path_final = str(resolved)
+            else:
+                data_path_final = str(resolved)
         except HTTPException:
             raise
         except Exception as e:
@@ -1537,17 +1537,51 @@ def create_project(body: ProjectCreate):
     if body.project_type == "dataset":
         db_path_str = str(_project_db_path(pid))
 
+    initial_status = "extracting" if archive_to_extract else "ready"
     con = sqlite3.connect(str(DB_PATH))
     con.execute(
         """INSERT INTO projects
            (project_id, name, description, project_type, data_path, filter_json, db_path, attacker_ips, created_at, updated_at, event_count, status)
-           VALUES (?,?,?,?,?,?,?,?,?,?,0,'ready')""",
+           VALUES (?,?,?,?,?,?,?,?,?,?,0,?)""",
         (pid, body.name, body.description, body.project_type,
-         data_path_final, json.dumps(body.filter_json), db_path_str, body.attacker_ips, now, now),
+         data_path_final, json.dumps(body.filter_json), db_path_str, body.attacker_ips, now, now,
+         initial_status),
     )
     con.commit()
     con.close()
-    return {"project_id": pid, "status": "ready"}
+
+    if archive_to_extract is not None:
+        dest_dir = Path(data_path_final)
+        src_archive = archive_to_extract
+
+        def _extract_in_background():
+            try:
+                extracted = _extract_archive(src_archive, dest_dir)
+                ucon = sqlite3.connect(str(DB_PATH))
+                ucon.execute(
+                    "UPDATE projects SET data_path=?, status='ready', updated_at=? WHERE project_id=?",
+                    (str(extracted), datetime.now(timezone.utc).isoformat(), pid),
+                )
+                ucon.commit()
+                ucon.close()
+                _logger.info("project %s: archive extracted to %s", pid, extracted)
+            except Exception as exc:
+                _logger.warning("project %s: archive extraction failed: %s", pid, exc)
+                shutil.rmtree(str(dest_dir), ignore_errors=True)
+                try:
+                    ecn = sqlite3.connect(str(DB_PATH))
+                    ecn.execute(
+                        "UPDATE projects SET status='error', updated_at=? WHERE project_id=?",
+                        (datetime.now(timezone.utc).isoformat(), pid),
+                    )
+                    ecn.commit()
+                    ecn.close()
+                except Exception as upd_exc:
+                    _logger.warning("project %s: could not mark status=error: %s", pid, upd_exc)
+
+        threading.Thread(target=_extract_in_background, daemon=True).start()
+
+    return {"project_id": pid, "status": initial_status}
 
 
 @app.get("/api/projects/{project_id}")
