@@ -305,7 +305,7 @@ label.tb-label { color: var(--text-dim); font-size: 11px; white-space: nowrap; }
 
   <label class="tb-label">PROJECT</label>
   <select id="sel-project"><option value="">Default</option></select>
-  <button class="tb-btn" id="btn-upload-project" title="Import dataset from ZIP">&#8853; ZIP</button>
+  <button class="tb-btn" id="btn-upload-project" title="Import dataset from archive (.zip / .tar / .tar.gz)">&#8853; IMPORT</button>
 
   <span class="tb-sep">|</span>
 
@@ -1546,10 +1546,12 @@ async function submitUpload(e) {
   const ipsEl   = document.getElementById('upload-ips');
   const status  = document.getElementById('upload-status');
 
-  if (!fileEl.files[0]) { showToast('Select a ZIP file first', 'warning'); return; }
+  if (!fileEl.files[0]) { showToast('Select a .zip / .tar / .tar.gz archive first', 'warning'); return; }
 
   const fd = new FormData();
-  fd.append('name', nameEl.value || fileEl.files[0].name.replace('.zip',''));
+  const fname = fileEl.files[0].name;
+  const baseName = fname.replace(/\.(zip|tar\.gz|tar\.bz2|tgz|tbz2|tar)$/i, '');
+  fd.append('name', nameEl.value || baseName);
   fd.append('file', fileEl.files[0]);
   fd.append('attacker_ips', ipsEl.value || '');
 
@@ -1606,15 +1608,15 @@ window.addEventListener('DOMContentLoaded', () => {
 <!-- ZIP UPLOAD MODAL -->
 <div id="upload-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.75);z-index:1000;align-items:center;justify-content:center;">
   <div style="background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:28px 32px;min-width:380px;max-width:480px;width:100%;">
-    <div style="font-size:13px;font-weight:700;letter-spacing:2px;color:var(--accent2);margin-bottom:20px;text-transform:uppercase;">Import Dataset ZIP</div>
+    <div style="font-size:13px;font-weight:700;letter-spacing:2px;color:var(--accent2);margin-bottom:20px;text-transform:uppercase;">Import Dataset Archive</div>
     <form id="upload-form" autocomplete="off">
       <div style="margin-bottom:14px;">
         <label style="display:block;font-size:11px;color:var(--text-dim);margin-bottom:5px;text-transform:uppercase;letter-spacing:1px;">Project Name</label>
         <input id="upload-name" type="text" placeholder="e.g. P032" style="width:100%;background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:6px 10px;border-radius:3px;font-size:12px;font-family:var(--font-ui);">
       </div>
       <div style="margin-bottom:14px;">
-        <label style="display:block;font-size:11px;color:var(--text-dim);margin-bottom:5px;text-transform:uppercase;letter-spacing:1px;">ZIP File <span style="color:var(--red)">*</span></label>
-        <input id="upload-file" type="file" accept=".zip" required style="width:100%;background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:6px 10px;border-radius:3px;font-size:12px;cursor:pointer;">
+        <label style="display:block;font-size:11px;color:var(--text-dim);margin-bottom:5px;text-transform:uppercase;letter-spacing:1px;">Archive (.zip / .tar / .tar.gz) <span style="color:var(--red)">*</span></label>
+        <input id="upload-file" type="file" accept=".zip,.tar,.tar.gz,.tgz,.tar.bz2,.tbz2" required style="width:100%;background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:6px 10px;border-radius:3px;font-size:12px;cursor:pointer;">
       </div>
       <div style="margin-bottom:20px;">
         <label style="display:block;font-size:11px;color:var(--text-dim);margin-bottom:5px;text-transform:uppercase;letter-spacing:1px;">Attacker IPs <span style="color:var(--text-dim)">(optional, comma-sep)</span></label>

@@ -1196,6 +1196,92 @@ def _project_db_path(project_id: str) -> Path:
     return DB_PATH.parent / f"project_{project_id}.db"
 
 
+def _normalize_path_input(raw: str) -> str:
+    r"""Translate Windows/WSL-style paths to POSIX paths the server can resolve.
+
+    Handles:
+      - \\wsl.localhost\<distro>\path  -> /path  (server already runs inside WSL)
+      - \\wsl$\<distro>\path           -> /path
+      - C:\path\to\thing               -> /mnt/c/path/to/thing
+      - mixed backslashes              -> forward slashes
+    """
+    if not raw:
+        return raw
+    import re as _re
+    s = raw.strip().strip('"').strip("'")
+    m = _re.match(r'^\\\\wsl(?:\.localhost|\$)\\[^\\/]+[\\/](.*)$', s, _re.IGNORECASE)
+    if m:
+        s = '/' + m.group(1).replace('\\', '/')
+    elif _re.match(r'^[A-Za-z]:[\\/]', s):
+        drive = s[0].lower()
+        rest = s[3:].replace('\\', '/')
+        s = f'/mnt/{drive}/{rest}'
+    else:
+        s = s.replace('\\', '/')
+    return s
+
+
+def _is_archive_path(p: Path) -> bool:
+    n = p.name.lower()
+    return n.endswith(('.zip', '.tar', '.tar.gz', '.tgz', '.tar.bz2', '.tbz2'))
+
+
+def _extract_archive(src: Path, dest: Path) -> Path:
+    """Extract zip/tar into dest. If the archive has a single top-level dir, return it."""
+    import zipfile as _zf, tarfile as _tf
+    dest.mkdir(parents=True, exist_ok=True)
+    name = src.name.lower()
+    if name.endswith('.zip'):
+        with _zf.ZipFile(src) as zf:
+            zf.extractall(str(dest))
+    else:
+        with _tf.open(src) as tf:
+            tf.extractall(str(dest))
+    entries = [e for e in dest.iterdir() if not e.name.startswith('.')]
+    if len(entries) == 1 and entries[0].is_dir():
+        return entries[0]
+    return dest
+
+
+def _allowed_data_roots() -> list:
+    """List of paths under which a user-supplied data_path is accepted."""
+    roots = []
+    env = _os.environ.get('SANN_ALLOWED_DATA_ROOTS', '')
+    if env:
+        for r in env.split(','):
+            r = r.strip()
+            if r:
+                try: roots.append(Path(r).resolve())
+                except Exception: pass
+    try: roots.append(MEDIA_ROOT.parent.resolve())
+    except Exception: pass
+    home = _os.environ.get('HOME', '')
+    if home:
+        try: roots.append(Path(home).resolve())
+        except Exception: pass
+    for extra in ('/mnt', '/tmp'):
+        try: roots.append(Path(extra).resolve())
+        except Exception: pass
+    try: roots.append((DB_PATH.parent / 'uploads').resolve())
+    except Exception: pass
+    seen, dedup = set(), []
+    for r in roots:
+        s = str(r)
+        if s not in seen:
+            seen.add(s)
+            dedup.append(r)
+    return dedup
+
+
+def _path_under_any(p: Path, roots) -> bool:
+    sp = str(p)
+    for r in roots:
+        sr = str(r)
+        if sp == sr or sp.startswith(sr + '/'):
+            return True
+    return False
+
+
 def _build_project_query(filter_json: dict):
     """Return (where_clause, params) for a filter-type project."""
     clauses = []
@@ -1251,38 +1337,36 @@ async def upload_project(
     attacker_ips: str = Form(""),
     file: UploadFile = File(...),
 ):
-    """Create a dataset project from an uploaded ZIP file and trigger ingest."""
-    import zipfile, tempfile, subprocess
+    """Create a dataset project from an uploaded archive (.zip/.tar/.tar.gz) and trigger ingest."""
+    import tempfile, subprocess
 
-    if not (file.filename or "").lower().endswith(".zip"):
-        raise HTTPException(400, "Only .zip files are accepted")
+    fname = (file.filename or "").lower()
+    if not fname.endswith(('.zip', '.tar', '.tar.gz', '.tgz', '.tar.bz2', '.tbz2')):
+        raise HTTPException(400, "Only .zip, .tar, .tar.gz, .tgz, or .tar.bz2 archives are accepted")
 
     upload_base = DB_PATH.parent / "uploads"
     upload_base.mkdir(exist_ok=True)
 
     project_id = str(uuid.uuid4())[:8]
     dest = upload_base / f"dataset_{project_id}"
-    dest.mkdir(parents=True, exist_ok=True)
 
-    # Save and extract zip
+    # Save archive to a temp file matching its extension, then extract via shared helper
+    suffix = '.zip' if fname.endswith('.zip') else (
+        '.tar.gz' if fname.endswith(('.tar.gz', '.tgz')) else (
+        '.tar.bz2' if fname.endswith(('.tar.bz2', '.tbz2')) else '.tar'))
     content = await file.read()
-    tmp_fd, tmp_path = tempfile.mkstemp(suffix=".zip")
+    tmp_fd, tmp_path = tempfile.mkstemp(suffix=suffix)
     try:
         _os.write(tmp_fd, content)
         _os.close(tmp_fd)
-        with zipfile.ZipFile(tmp_path) as zf:
-            zf.extractall(str(dest))
-    except zipfile.BadZipFile:
-        shutil.rmtree(str(dest), ignore_errors=True)
-        raise HTTPException(400, "Invalid or corrupt ZIP file")
+        try:
+            dest = _extract_archive(Path(tmp_path), dest)
+        except Exception as e:
+            shutil.rmtree(str(dest), ignore_errors=True)
+            raise HTTPException(400, f"Invalid or corrupt archive: {e}")
     finally:
         try: _os.unlink(tmp_path)
-        except Exception: pass
-
-    # If zip contained a single top-level directory, use it as data_path
-    entries = list(dest.iterdir())
-    if len(entries) == 1 and entries[0].is_dir():
-        dest = entries[0]
+        except Exception as e: _logger.warning("upload_project temp cleanup failed: %s", e)
 
     now = datetime.now(timezone.utc).isoformat()
     db_path_str = str(_project_db_path(project_id))
@@ -1396,16 +1480,6 @@ def create_project(body: ProjectCreate):
         raise HTTPException(400, "project_type must be 'dataset' or 'filter'")
     if body.project_type == "dataset" and not body.data_path:
         raise HTTPException(400, "data_path required for dataset projects")
-    if body.project_type == "dataset" and body.data_path:
-        try:
-            resolved = Path(body.data_path).resolve()
-            allowed = MEDIA_ROOT.parent.resolve()
-            if not str(resolved).startswith(str(allowed)):
-                raise HTTPException(400, f"data_path must be under {allowed}")
-        except HTTPException:
-            raise
-        except Exception:
-            raise HTTPException(400, "Invalid data_path")
     if body.attacker_ips:
         import re as _re
         for ip in body.attacker_ips.split(","):
@@ -1415,6 +1489,43 @@ def create_project(body: ProjectCreate):
 
     pid = str(uuid.uuid4())[:8]
     now = datetime.now(timezone.utc).isoformat()
+    data_path_final = body.data_path
+
+    if body.project_type == "dataset" and body.data_path:
+        try:
+            normalized = _normalize_path_input(body.data_path)
+            resolved = Path(normalized).resolve()
+            if not resolved.exists():
+                raise HTTPException(400, f"data_path does not exist: {resolved}")
+            allowed_roots = _allowed_data_roots()
+            if not _path_under_any(resolved, allowed_roots):
+                roots_str = ", ".join(str(r) for r in allowed_roots)
+                raise HTTPException(
+                    400,
+                    f"data_path must be under one of: {roots_str}. "
+                    f"Set SANN_ALLOWED_DATA_ROOTS in .env to extend this list."
+                )
+            if resolved.is_file():
+                if not _is_archive_path(resolved):
+                    raise HTTPException(
+                        400,
+                        f"data_path must be a directory or a .zip/.tar/.tar.gz archive: {resolved.name}"
+                    )
+                dest = (DB_PATH.parent / "uploads" / f"dataset_{pid}").resolve()
+                try:
+                    resolved = _extract_archive(resolved, dest)
+                except Exception as e:
+                    shutil.rmtree(str(dest), ignore_errors=True)
+                    raise HTTPException(400, f"Failed to extract archive: {e}")
+            elif not resolved.is_dir():
+                raise HTTPException(400, f"data_path is neither a directory nor a file: {resolved}")
+            data_path_final = str(resolved)
+        except HTTPException:
+            raise
+        except Exception as e:
+            _logger.warning("create_project data_path validation failed: %s", e)
+            raise HTTPException(400, f"Invalid data_path: {e}")
+
     db_path_str = ""
     if body.project_type == "dataset":
         db_path_str = str(_project_db_path(pid))
@@ -1425,7 +1536,7 @@ def create_project(body: ProjectCreate):
            (project_id, name, description, project_type, data_path, filter_json, db_path, attacker_ips, created_at, updated_at, event_count, status)
            VALUES (?,?,?,?,?,?,?,?,?,?,0,'ready')""",
         (pid, body.name, body.description, body.project_type,
-         body.data_path, json.dumps(body.filter_json), db_path_str, body.attacker_ips, now, now),
+         data_path_final, json.dumps(body.filter_json), db_path_str, body.attacker_ips, now, now),
     )
     con.commit()
     con.close()

@@ -153,23 +153,35 @@ To run on a different port, change `--port`. To bind only locally, use `--host 1
 
 ## Loading data
 
-Two ways. Pick whichever fits your workflow.
+Three ways. Pick whichever fits your workflow.
 
-### Option A — Upload a ZIP through the UI
+### Option A — Import an archive through the HUD
 
 This is the easiest path and the one I'd hand to someone testing the platform for the first time.
 
-1. Zip up your dataset folder. The archive root should contain one or more `user<id>/...` subdirectories matching the layout below.
-2. Click **⊕ ZIP** in the top bar.
-3. Fill in the project name (e.g. `P032`), optionally the attacker IPs (comma-separated), pick the ZIP, hit **Upload**.
-4. The dialog polls for status. The project transitions `ingesting` → `ready` once the background pipeline finishes. Time depends on size; a typical session takes 30 seconds to a few minutes.
+1. Pack your dataset folder into a `.zip`, `.tar`, `.tar.gz` (or `.tgz` / `.tar.bz2`). The archive root should contain one or more `user<id>/...` subdirectories matching the [Dataset layout](#dataset-layout) section below.
+2. Open **http://localhost:8000/threat** and click **⊕ IMPORT** in the top bar.
+3. Fill in the project name (e.g. `P032`), optionally the attacker IPs (comma-separated), pick the archive, hit **Import**.
+4. The dialog polls every 3s. The status line walks through `Uploading…` → `Ingesting… <N> events so far` → `Done — <N> events`. Time depends on size; a typical session takes 30 seconds to a few minutes.
 5. The new project appears in the **PROJECT** dropdown and you can start scrubbing.
 
-Behind the scenes the API extracts the ZIP into `data/uploads/dataset_<id>/`, runs `import_manager.py` against it in a background thread (full pipeline — ingest plus all the post-processing steps), then triggers a media sync so the video and casts show up in the registry. If anything fails the project gets marked `error` instead of `ready`.
+Behind the scenes the API extracts the archive into `data/uploads/dataset_<id>/`, runs `import_manager.py` against it in a background thread (full pipeline — ingest plus all the post-processing steps), then triggers a media sync so the video and casts show up in the registry. If anything fails the project gets marked `error` instead of `ready`.
 
-### Option B — Ingest a dataset from disk
+### Option B — Create a project from a path on disk (dashboard UI)
 
-Faster for big datasets where you'd rather avoid zipping.
+If your dataset is already extracted somewhere on disk (or it's a big archive you don't want to re-upload), use the dashboard:
+
+1. Open **http://localhost:8000/** (the dashboard, not `/threat`).
+2. In the **Create Project** card, choose **dataset**, fill in the project name, and paste the absolute path into **Data directory path**. The path can point at either:
+   - a directory laid out like the [Dataset layout](#dataset-layout) section below, **or**
+   - a `.zip` / `.tar` / `.tar.gz` archive — the server extracts it into `data/uploads/dataset_<id>/` for you.
+3. Click **Create**, then hit **Ingest** on the new project card to run the pipeline.
+
+The path you paste must resolve under one of the allowed roots (configurable via `SANN_ALLOWED_DATA_ROOTS`, defaults to `SANN_DATA_ROOT`'s parent, `$HOME`, `/mnt`, `/tmp`, and `data/uploads/`). WSL-style paths copied from Windows Explorer (`\\wsl.localhost\<distro>\...` or `C:\...`) are translated automatically.
+
+### Option C — Ingest from the CLI
+
+Faster for large datasets in scripted workflows.
 
 ```bash
 # Edit .env so SANN_DATA_ROOT points at your dataset
@@ -178,7 +190,7 @@ python3 import_manager.py
 
 This processes the default dataset and writes to `data/sann.db`.
 
-For an isolated project (same as what the ZIP upload does internally):
+For an isolated project (same as what the dashboard does internally):
 
 ```bash
 python3 import_manager.py \
@@ -295,6 +307,7 @@ The directory immediately under `user<id>/` becomes the `scenario_name` — comm
 | `SANN_DB_PATH` | `data/sann.db` | Main corpus SQLite path |
 | `SANN_ATTACKER_IPS` | (P003 defaults) | Comma-separated attacker IPs for C2 classification |
 | `SANN_CORS_ORIGINS` | `localhost:8000,127.0.0.1:8000,localhost:3000` | CORS allowlist |
+| `SANN_ALLOWED_DATA_ROOTS` | (auto: `SANN_DATA_ROOT` parent, `$HOME`, `/mnt`, `/tmp`, `data/uploads`) | Extra root paths under which dashboard-supplied `data_path` values are accepted |
 
 ---
 
