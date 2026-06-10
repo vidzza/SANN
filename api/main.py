@@ -1402,16 +1402,59 @@ async def upload_project(
     if attacker_ips:
         pipeline_cmd += ["--attacker-ips", attacker_ips]
 
+    log_dir = DB_PATH.parent / "logs"
+    log_dir.mkdir(exist_ok=True)
+    log_path = log_dir / f"ingest_{project_id}.log"
+
+    def _set_status(status: str, msg: str = ""):
+        try:
+            ucon = sqlite3.connect(str(DB_PATH))
+            ucon.execute(
+                "UPDATE projects SET status=?, description=COALESCE(NULLIF(?, ''), description), updated_at=? WHERE project_id=?",
+                (status, msg, datetime.now(timezone.utc).isoformat(), project_id),
+            )
+            ucon.commit()
+            ucon.close()
+        except Exception as exc:
+            _logger.warning(f"could not set status={status} for {project_id}: {exc}")
+
     def _pipeline_then_sync():
         try:
-            subprocess.run(pipeline_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            with open(log_path, "w") as logf:
+                proc = subprocess.run(pipeline_cmd, stdout=logf, stderr=subprocess.STDOUT)
+            if proc.returncode != 0:
+                _set_status("error", f"Pipeline exited {proc.returncode}. See {log_path.name}")
+                return
         except Exception as exc:
             _logger.warning(f"Pipeline subprocess failed for {project_id}: {exc}")
+            _set_status("error", f"Pipeline failed: {exc}")
             return
+
         try:
             sync_media_for_project(project_id)
         except Exception as exc:
             _logger.warning(f"Post-pipeline media sync failed for {project_id}: {exc}")
+
+        try:
+            con = sqlite3.connect(str(DB_PATH))
+            con.row_factory = sqlite3.Row
+            r = con.execute("SELECT db_path, project_type, filter_json FROM projects WHERE project_id=?", (project_id,)).fetchone()
+            con.close()
+            if r:
+                fj = json.loads(r["filter_json"] or "{}")
+                cnt = _count_project_events(project_id, r["project_type"], fj, r["db_path"])
+                if cnt > 0:
+                    ucon = sqlite3.connect(str(DB_PATH))
+                    ucon.execute(
+                        "UPDATE projects SET status='ready', event_count=?, updated_at=? WHERE project_id=?",
+                        (cnt, datetime.now(timezone.utc).isoformat(), project_id),
+                    )
+                    ucon.commit()
+                    ucon.close()
+                else:
+                    _set_status("empty", "Archive contained no ingestable files (no .cast/.log/.json/eve.json/recording.*)")
+        except Exception as exc:
+            _logger.warning(f"Final status update failed for {project_id}: {exc}")
 
     threading.Thread(target=_pipeline_then_sync, daemon=True).start()
 
@@ -1443,7 +1486,13 @@ def project_status(project_id: str):
             status = "ready"
         except Exception:
             pass
-    return {"project_id": project_id, "status": status, "event_count": cnt, "data_path": row["data_path"]}
+    return {
+        "project_id": project_id,
+        "status": status,
+        "event_count": cnt,
+        "data_path": row["data_path"],
+        "message": row["description"] if status in ("error", "empty") else "",
+    }
 
 
 @app.get("/api/projects")

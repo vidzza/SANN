@@ -1444,26 +1444,55 @@ async function submitUpload(e) {
   status.textContent = `Ingesting… (project ${data.project_id})`;
   showToast(`Project "${data.name}" created — ingestion running in background`, 'success');
 
-  // Poll until ready, then reload project list
+  // Poll until terminal state, then reload project list or show error
   const pid = data.project_id;
+  const startedAt = Date.now();
   const poll = setInterval(async () => {
     const r = await fetch(`/api/projects/${pid}/status`).catch(() => null);
     if (!r || !r.ok) return;
     const d = await r.json();
-    status.textContent = `Ingesting… ${(d.event_count||0).toLocaleString()} events so far`;
+
+    // Terminal states
     if (d.status === 'ready' && d.event_count > 0) {
       clearInterval(poll);
       status.textContent = `Done — ${d.event_count.toLocaleString()} events`;
       setTimeout(async () => {
         closeUploadModal();
-        // Reload project selector
         const sel = document.getElementById('sel-project');
         const prevVal = sel.value;
         while (sel.options.length > 1) sel.remove(1);
         await loadProjects();
         sel.value = prevVal;
-        showToast(`Project "${data.name}" ready`, 'success');
+        showToast(`Project "${data.name}" ready (${d.event_count.toLocaleString()} events)`, 'success');
       }, 1200);
+      return;
+    }
+    if (d.status === 'empty') {
+      clearInterval(poll);
+      status.textContent = '';
+      showToast(`Project "${data.name}" — ${d.message || 'archive had no ingestable files'}`, 'warning');
+      closeUploadModal();
+      return;
+    }
+    if (d.status === 'error') {
+      clearInterval(poll);
+      status.textContent = '';
+      showToast(`Project "${data.name}" failed: ${d.message || 'ingest error'}`, 'error');
+      closeUploadModal();
+      return;
+    }
+
+    // Still ingesting — update progress label
+    const elapsedSec = Math.round((Date.now() - startedAt) / 1000);
+    const cnt = (d.event_count || 0).toLocaleString();
+    status.textContent = `Ingesting… ${cnt} events so far (${elapsedSec}s)`;
+
+    // Safety bailout — if 10 minutes pass and still not terminal, give up
+    if (elapsedSec > 600) {
+      clearInterval(poll);
+      status.textContent = '';
+      showToast(`Project "${data.name}" — ingest timed out. Check data/logs/ingest_${pid}.log`, 'error');
+      closeUploadModal();
     }
   }, 3000);
 }
