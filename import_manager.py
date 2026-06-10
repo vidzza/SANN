@@ -41,9 +41,9 @@ _load_env_file()
 
 import os as _os
 _REPO_ROOT = Path(__file__).parent
-DB_PATH    = Path(_os.environ.get('GODEYE_DB_PATH',
-                  str(_REPO_ROOT / 'data' / 'godeye_v2.db')))
-DATA_ROOT  = Path(_os.environ.get('GODEYE_DATA_ROOT', '/tmp/obsidian_full/P003'))
+DB_PATH    = Path(_os.environ.get('SANN_DB_PATH',
+                  str(_REPO_ROOT / 'data' / 'sann.db')))
+DATA_ROOT  = Path(_os.environ.get('SANN_DATA_ROOT', '/tmp/obsidian_full/P003'))
 INGEST_SCRIPT = _REPO_ROOT / 'ingest_v2.py'
 
 # ---------------------------------------------------------------------------

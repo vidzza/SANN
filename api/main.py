@@ -1,5 +1,5 @@
 """
-SANN API — FastAPI server backed by godeye_v2.db
+SANN API — FastAPI server backed by sann.db
 """
 
 import asyncio
@@ -34,9 +34,10 @@ def _load_env_file():
 
 _load_env_file()
 
-DB_PATH = Path(__file__).parent.parent / "data" / "godeye_v2.db"
+DB_PATH = Path(_os.environ.get('SANN_DB_PATH',
+              str(Path(__file__).parent.parent / "data" / "sann.db")))
 FRONTEND_PATH = Path(__file__).parent.parent / "frontend"
-MEDIA_ROOT = Path(_os.environ.get('GODEYE_DATA_ROOT', '/tmp/obsidian_full/P003'))
+MEDIA_ROOT = Path(_os.environ.get('SANN_DATA_ROOT', '/tmp/obsidian_full/P003'))
 
 app = FastAPI(
     title="SANN API",
@@ -48,7 +49,7 @@ import logging as _logging
 _logger = _logging.getLogger("sann.api")
 
 _CORS_ORIGINS = [o.strip() for o in _os.environ.get(
-    "GODEYE_CORS_ORIGINS",
+    "SANN_CORS_ORIGINS",
     "http://localhost:8000,http://127.0.0.1:8000,http://localhost:3000"
 ).split(",") if o.strip()]
 
@@ -1552,7 +1553,7 @@ def project_tree(project_id: str):
 
 @app.get("/api/tree")
 def active_tree():
-    """Data tree for the active godeye_v2.db."""
+    """Data tree for the active sann.db."""
     events = q("SELECT participant_id, scenario_name, source_host, source_file FROM events ORDER BY timestamp_utc", [])
     return {"tree": _tree_from_events(events)}
 
@@ -1634,7 +1635,7 @@ def export_sqlite(project_id: str):
     else:
         # Build a temp SQLite with just the filtered events
         import tempfile as _tempfile
-        tmp_fd, tmp_path_str = _tempfile.mkstemp(suffix=".db", prefix=f"godeye_export_{project_id}_")
+        tmp_fd, tmp_path_str = _tempfile.mkstemp(suffix=".db", prefix=f"sann_export_{project_id}_")
         _os.close(tmp_fd)
         tmp_path = Path(tmp_path_str)
         src_con = sqlite3.connect(str(DB_PATH))

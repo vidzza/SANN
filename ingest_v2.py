@@ -31,13 +31,13 @@ def _load_env_file():
 _load_env_file()
 
 import os as _os
-DATA_ROOT = Path(_os.environ.get('GODEYE_DATA_ROOT', '/tmp/obsidian_full/P003'))
-DB_PATH   = Path(_os.environ.get('GODEYE_DB_PATH',
-                 str(Path(__file__).parent / 'data' / 'godeye_v2.db')))
+DATA_ROOT = Path(_os.environ.get('SANN_DATA_ROOT', '/tmp/obsidian_full/P003'))
+DB_PATH   = Path(_os.environ.get('SANN_DB_PATH',
+                 str(Path(__file__).parent / 'data' / 'sann.db')))
 
 # Comma-separated attacker IPs used for sensor_packet C2 classification.
-# Override via GODEYE_ATTACKER_IPS env var for datasets other than P003.
-_ATTACKER_IPS_ENV = _os.environ.get('GODEYE_ATTACKER_IPS', '')
+# Override via SANN_ATTACKER_IPS env var for datasets other than P003.
+_ATTACKER_IPS_ENV = _os.environ.get('SANN_ATTACKER_IPS', '')
 ATTACKER_IPS = tuple(
     ip.strip() for ip in _ATTACKER_IPS_ENV.split(',') if ip.strip()
 ) if _ATTACKER_IPS_ENV else ('122.10.11.101', '122.10.11.102', '114.0.194.2', '114.231.10.3')
@@ -135,8 +135,6 @@ def classify_phase(command: str, action_name: str, tool: str, raw_data: str = ''
 
     # sensor_packet sub-classification using raw_data content
     if action_name == 'sensor_packet':
-        # TODO: attacker_ips is hardcoded for P003 dataset. Make this configurable
-        # via .env or a config file so classification works across different datasets.
         if any(ip in raw_data for ip in ATTACKER_IPS):
             return 'command_and_control', 'TA0011', 'T1071'
         if 'sec-workstation' in raw:

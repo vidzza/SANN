@@ -135,7 +135,7 @@ Copy the env template:
 cp .env.example .env
 ```
 
-You can leave the defaults if you plan to upload data through the UI. If you have a dataset on disk you want to ingest from a local path, edit `GODEYE_DATA_ROOT` to point at it.
+You can leave the defaults if you plan to upload data through the UI. If you have a dataset on disk you want to ingest from a local path, edit `SANN_DATA_ROOT` to point at it.
 
 ---
 
@@ -172,11 +172,11 @@ Behind the scenes the API extracts the ZIP into `data/uploads/dataset_<id>/`, ru
 Faster for big datasets where you'd rather avoid zipping.
 
 ```bash
-# Edit .env so GODEYE_DATA_ROOT points at your dataset
+# Edit .env so SANN_DATA_ROOT points at your dataset
 python3 import_manager.py
 ```
 
-This processes the default dataset and writes to `data/godeye_v2.db`.
+This processes the default dataset and writes to `data/sann.db`.
 
 For an isolated project (same as what the ZIP upload does internally):
 
@@ -185,7 +185,7 @@ python3 import_manager.py \
   --data-root /path/to/P032 \
   --db data/project_9c4cee20.db \
   --project-id 9c4cee20 \
-  --main-db data/godeye_v2.db \
+  --main-db data/sann.db \
   --attacker-ips "128.16.11.9,114.0.194.2"
 ```
 
@@ -230,7 +230,7 @@ Errors (failed fetches, missing ffmpeg, etc.) appear as a toast in the bottom-ri
 
 Every project has its own SQLite at `data/project_<id>.db`. Switching projects in the dropdown tears down the current state — pauses the video, disposes the cast player, clears the panels, resets the cursor — and reloads everything from the new project.
 
-Every event also gets written into the main corpus `data/godeye_v2.db` with `project_id` stamped. That means:
+Every event also gets written into the main corpus `data/sann.db` with `project_id` stamped. That means:
 
 - Queries scoped to a project (`?project_id=da2c86c9`) hit the project DB directly.
 - Queries without a `project_id` hit the corpus and see all projects combined.
@@ -291,10 +291,10 @@ The directory immediately under `user<id>/` becomes the `scenario_name` — comm
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `GODEYE_DATA_ROOT` | `/tmp/obsidian_full/P003` | Root of the default dataset on disk |
-| `GODEYE_DB_PATH` | `data/godeye_v2.db` | Main corpus SQLite path |
-| `GODEYE_ATTACKER_IPS` | (P003 defaults) | Comma-separated attacker IPs for C2 classification |
-| `GODEYE_CORS_ORIGINS` | `localhost:8000,127.0.0.1:8000,localhost:3000` | CORS allowlist |
+| `SANN_DATA_ROOT` | `/tmp/obsidian_full/P003` | Root of the default dataset on disk |
+| `SANN_DB_PATH` | `data/sann.db` | Main corpus SQLite path |
+| `SANN_ATTACKER_IPS` | (P003 defaults) | Comma-separated attacker IPs for C2 classification |
+| `SANN_CORS_ORIGINS` | `localhost:8000,127.0.0.1:8000,localhost:3000` | CORS allowlist |
 
 ---
 
@@ -368,7 +368,7 @@ Everything accepts `?project_id=<id>` to scope to a single project. Without it, 
 
 The server is meant for `localhost` use. Even so:
 
-- CORS is restricted to the allowlist in `GODEYE_CORS_ORIGINS`. There is no wildcard.
+- CORS is restricted to the allowlist in `SANN_CORS_ORIGINS`. There is no wildcard.
 - Project creation validates that `data_path` resolves under the configured data root, so an API consumer can't ask the ingester to read `/etc/passwd`.
 - `attacker_ips` is regex-checked before it hits the subprocess argv, so shell-injection attempts get rejected with 400.
 - Every `limit` parameter is clamped at 10000.
@@ -396,7 +396,7 @@ DB ingested before the timezone fix. Run `python3 import_manager.py --skip-inges
 Project status is `ready` but the media registry is empty. Hit `POST /api/projects/{id}/sync_media` manually. The upload flow does this automatically; if it fails, the project still gets marked ready since the events are there.
 
 **CORS errors in the browser console.**
-Add your origin to `GODEYE_CORS_ORIGINS` in `.env` and restart.
+Add your origin to `SANN_CORS_ORIGINS` in `.env` and restart.
 
 **`HTTP 404` from `/api/participants?project_id=...`.**
 The project ID doesn't exist. List with `GET /api/projects`. The 404 is intentional — a typo doesn't silently leak combined-corpus data.
