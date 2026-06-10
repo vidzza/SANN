@@ -1,0 +1,1632 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SANN — Threat Intelligence</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/asciinema-player@3.7.0/dist/bundle/asciinema-player.min.css">
+<script src="https://cdn.jsdelivr.net/npm/asciinema-player@3.7.0/dist/bundle/asciinema-player.min.js"></script>
+<style>
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+  --bg:        #0a0c10;
+  --bg2:       #0f1318;
+  --bg3:       #141920;
+  --border:    #1e2530;
+  --accent:    #1e6fb5;
+  --accent2:   #2a8ad4;
+  --text:      #c8d0dc;
+  --text-dim:  #5a6475;
+  --text-hi:   #e8edf5;
+  --orange:    #e07b39;
+  --red:       #c83232;
+  --green:     #3ca060;
+  --yellow:    #c8a832;
+  --purple:    #7b5ea7;
+  --font-mono: 'Cascadia Code', 'Fira Mono', 'Courier New', monospace;
+  --font-ui:   'Inter', 'Segoe UI', sans-serif;
+}
+
+html, body {
+  height: 100%; width: 100%;
+  background: var(--bg); color: var(--text);
+  font-family: var(--font-ui); font-size: 12px;
+  overflow: hidden;
+}
+
+/* ── TOPBAR ── */
+#topbar {
+  display: flex; align-items: center; gap: 10px;
+  padding: 0 16px; height: 46px;
+  background: var(--bg2);
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0; position: relative; z-index: 100;
+}
+.logo { color: var(--accent2); font-weight: 700; font-size: 14px; letter-spacing: 3px; text-transform: uppercase; white-space: nowrap; }
+.tb-sep { color: var(--border); font-size: 18px; }
+#topbar select {
+  background: var(--bg3); border: 1px solid var(--border); color: var(--text);
+  padding: 3px 8px; border-radius: 3px; font-size: 11px; cursor: pointer;
+  font-family: var(--font-ui); max-width: 180px;
+}
+#topbar select:focus { outline: 1px solid var(--accent); }
+.tb-btn {
+  background: var(--bg3); border: 1px solid var(--border); color: var(--text);
+  padding: 4px 10px; border-radius: 3px; font-size: 12px; cursor: pointer;
+  font-family: var(--font-ui); line-height: 1;
+}
+.tb-btn:hover { background: var(--accent); color: #fff; border-color: var(--accent2); }
+.tb-btn.playing { background: var(--green); color: #fff; border-color: var(--green); }
+#tb-clock {
+  margin-left: auto; color: var(--accent2); font-family: var(--font-mono);
+  font-size: 11px; white-space: nowrap; letter-spacing: 1px;
+}
+#tb-cursor-ts { color: var(--orange); font-family: var(--font-mono); font-size: 11px; white-space: nowrap; }
+label.tb-label { color: var(--text-dim); font-size: 11px; white-space: nowrap; }
+.tb-window-sel { width: 80px; }
+
+/* ── MAIN LAYOUT ── */
+#main {
+  display: grid;
+  grid-template-columns: 280px 1fr 280px;
+  grid-template-rows: 1fr;
+  height: calc(100vh - 46px - 36px - 88px); /* topbar + phase-bar + timeline */
+  overflow: hidden;
+}
+
+/* ── HUD PANELS (left & right) ── */
+.hud-col {
+  display: flex; flex-direction: column; gap: 6px;
+  padding: 6px; overflow: hidden;
+  background: var(--bg);
+}
+.hud-panel {
+  flex: 1; display: flex; flex-direction: column; min-height: 0;
+  background: rgba(10,12,16,0.85);
+  border: 1px solid rgba(30,111,181,0.3);
+  border-radius: 4px;
+  backdrop-filter: blur(8px);
+  overflow: hidden;
+}
+.hud-panel-header {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 5px 10px; flex-shrink: 0;
+  border-bottom: 1px solid rgba(30,111,181,0.2);
+  background: rgba(30,111,181,0.08);
+}
+.hud-panel-title {
+  font-size: 10px; font-weight: 700; letter-spacing: 2px;
+  text-transform: uppercase; color: var(--accent2);
+}
+.hud-panel-count {
+  font-size: 10px; color: var(--text-dim); font-family: var(--font-mono);
+}
+.hud-body {
+  flex: 1; overflow-y: auto; overflow-x: hidden;
+  padding: 4px 6px; font-family: var(--font-mono); font-size: 10px;
+  line-height: 1.5; scrollbar-width: thin;
+  scrollbar-color: var(--border) transparent;
+}
+.hud-body::-webkit-scrollbar { width: 4px; }
+.hud-body::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+
+/* event rows */
+.ev-row {
+  padding: 2px 3px; border-radius: 2px; margin-bottom: 1px;
+  border-left: 2px solid transparent;
+  display: flex; flex-direction: column; gap: 1px;
+}
+.ev-row:hover { background: rgba(30,111,181,0.08); }
+.ev-row[data-epoch] { cursor: pointer; }
+.ev-row[data-epoch]:hover { background: rgba(30,111,181,0.22); border-left-color: var(--accent) !important; }
+.ev-time { color: var(--text-dim); font-size: 9px; }
+.ev-main { color: var(--text-hi); word-break: break-all; }
+.ev-meta { color: var(--text-dim); font-size: 9px; }
+
+/* phase colors on left border */
+.ev-row.phase-recon     { border-left-color: #3ca060; }
+.ev-row.phase-initial   { border-left-color: #2a8ad4; }
+.ev-row.phase-lateral   { border-left-color: #c8a832; }
+.ev-row.phase-persist   { border-left-color: #7b5ea7; }
+.ev-row.phase-exfil     { border-left-color: #e07b39; }
+.ev-row.phase-c2        { border-left-color: #c83232; }
+.ev-row.phase-exploit   { border-left-color: #c83232; }
+.ev-row.sev-high  { border-left-color: var(--orange) !important; }
+.ev-row.sev-crit  { border-left-color: var(--red) !important; }
+
+/* terminal specific */
+.cmd-text { color: #4af626; font-size: 10px; }
+.cmd-phase { font-size: 9px; color: var(--text-dim); }
+.cmd-mitre { font-size: 9px; color: var(--purple); }
+
+/* keylogger */
+.key-typed { color: var(--yellow); }
+.key-window { color: var(--text-dim); font-size: 9px; }
+
+/* auth */
+.auth-user { color: var(--green); }
+.auth-action { color: var(--text-dim); }
+
+/* network */
+.net-flow { color: var(--accent2); }
+.net-alert { color: var(--red); }
+.net-proto { color: var(--text-dim); font-size: 9px; }
+
+/* ── CENTER VIDEO AREA ── */
+#center-col {
+  display: flex; flex-direction: column; overflow: hidden;
+  background: #000; position: relative;
+}
+#media-area {
+  flex: 1; display: flex; align-items: center; justify-content: center;
+  overflow: hidden; position: relative; background: #000;
+}
+#vid-el {
+  max-width: 100%; max-height: 100%;
+  object-fit: contain; display: block;
+  background: #000;
+}
+#cast-wrap {
+  width: 100%; height: 100%;
+  display: none;
+  align-items: center; justify-content: center;
+  background: #000;
+}
+#cast-wrap .asciinema-player-theme-asciinema { background: #000 !important; }
+#no-media {
+  color: var(--text-dim); font-size: 14px; text-align: center;
+  display: flex; flex-direction: column; gap: 8px; align-items: center;
+}
+
+/* media-type toggle pills */
+#media-type-bar {
+  display: flex; gap: 6px; padding: 4px 8px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg2); flex-shrink: 0;
+}
+.media-pill {
+  padding: 2px 10px; border-radius: 10px; font-size: 10px; cursor: pointer;
+  border: 1px solid var(--border); color: var(--text-dim);
+  background: transparent; transition: all 0.15s;
+}
+.media-pill.active { background: var(--accent); color: #fff; border-color: var(--accent2); }
+
+/* ── PHASE BAR ── */
+#phase-bar {
+  height: 36px; display: flex; align-items: center;
+  padding: 0 16px; gap: 10px;
+  border-top: 1px solid var(--border);
+  background: var(--bg2); flex-shrink: 0;
+}
+.phase-label { font-size: 10px; color: var(--text-dim); text-transform: uppercase; letter-spacing: 1px; }
+#phase-badges { display: flex; gap: 6px; flex-wrap: wrap; }
+.phase-badge {
+  padding: 2px 10px; border-radius: 10px; font-size: 10px; font-weight: 600;
+  text-transform: uppercase; letter-spacing: 1px; border: 1px solid rgba(255,255,255,0.1);
+  opacity: 0.3; transition: opacity 0.2s;
+}
+.phase-badge.active { opacity: 1; box-shadow: 0 0 8px currentColor; }
+/* 14 MITRE ATT&CK Tactics */
+[data-phase="reconnaissance"]      { background:rgba(60,160,96,0.2);   color:#3ca060; border-color:#3ca060; }
+[data-phase="resource_development"]{ background:rgba(80,180,110,0.2);  color:#50b46e; border-color:#50b46e; }
+[data-phase="initial_access"]      { background:rgba(42,138,212,0.2);  color:#2a8ad4; border-color:#2a8ad4; }
+[data-phase="execution"]           { background:rgba(200,50,50,0.2);   color:#c83232; border-color:#c83232; }
+[data-phase="persistence"]         { background:rgba(123,94,167,0.2);  color:#7b5ea7; border-color:#7b5ea7; }
+[data-phase="privilege_escalation"]{ background:rgba(150,100,200,0.2); color:#9664c8; border-color:#9664c8; }
+[data-phase="defense_evasion"]     { background:rgba(100,180,180,0.2); color:#64b4b4; border-color:#64b4b4; }
+[data-phase="credential_access"]   { background:rgba(244,143,177,0.2); color:#f48fb1; border-color:#f48fb1; }
+[data-phase="discovery"]           { background:rgba(176,190,197,0.2); color:#b0bec5; border-color:#b0bec5; }
+[data-phase="lateral_movement"]    { background:rgba(200,168,50,0.2);  color:#c8a832; border-color:#c8a832; }
+[data-phase="collection"]          { background:rgba(38,198,218,0.2);  color:#26c6da; border-color:#26c6da; }
+[data-phase="command_and_control"] { background:rgba(239,83,80,0.2);   color:#ef5350; border-color:#ef5350; }
+[data-phase="exfiltration"]        { background:rgba(224,123,57,0.2);  color:#e07b39; border-color:#e07b39; }
+[data-phase="impact"]              { background:rgba(211,47,47,0.2);   color:#d32f2f; border-color:#d32f2f; }
+[data-phase="unknown"]             { background:rgba(90,100,117,0.2);  color:#5a6475; border-color:#5a6475; }
+.event-near { outline: 1px solid rgba(255,255,100,0.6); background: rgba(255,255,100,0.05) !important; }
+#current-phase-text { font-size: 11px; color: var(--text-dim); margin-left: auto; }
+
+/* ── TIMELINE BAR ── */
+#timeline-bar {
+  height: 88px; flex-shrink: 0;
+  background: var(--bg2); border-top: 1px solid var(--border);
+  display: flex; flex-direction: column; position: relative;
+}
+#tl-labels-top {
+  display: flex; justify-content: space-between; padding: 4px 16px 0;
+  font-size: 9px; color: var(--text-dim); font-family: var(--font-mono);
+  flex-shrink: 0;
+}
+#scrubber-wrap {
+  flex: 1; position: relative; cursor: crosshair; margin: 0 12px;
+  min-height: 0;
+}
+#heatmap-canvas {
+  position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+  pointer-events: none;
+}
+#media-ranges-canvas {
+  position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+  pointer-events: none;
+}
+#cursor-line {
+  position: absolute; top: 0; bottom: 0; width: 2px;
+  background: var(--orange); pointer-events: none; z-index: 10;
+  box-shadow: 0 0 6px var(--orange);
+}
+#cursor-tri {
+  position: absolute; bottom: -1px; width: 0; height: 0;
+  border-left: 5px solid transparent; border-right: 5px solid transparent;
+  border-top: 7px solid var(--orange);
+  transform: translateX(-50%); pointer-events: none; z-index: 11;
+}
+#tl-labels-bot {
+  display: flex; justify-content: space-between; align-items: center;
+  padding: 2px 16px 4px;
+  font-size: 9px; color: var(--text-dim); font-family: var(--font-mono);
+  flex-shrink: 0;
+}
+#tl-cursor-label {
+  position: absolute; left: 50%; transform: translateX(-50%);
+  font-family: var(--font-mono); font-size: 10px; color: var(--orange);
+  white-space: nowrap; pointer-events: none;
+}
+
+/* loading overlay */
+#loading-overlay {
+  position: fixed; inset: 0; background: rgba(10,12,16,0.92);
+  display: flex; align-items: center; justify-content: center;
+  z-index: 999; flex-direction: column; gap: 12px;
+}
+.spinner {
+  width: 32px; height: 32px;
+  border: 3px solid var(--border); border-top-color: var(--accent2);
+  border-radius: 50%; animation: spin 0.7s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+#loading-text { color: var(--text-dim); font-size: 12px; letter-spacing: 1px; }
+
+/* utility */
+.flex-spacer { flex: 1; }
+</style>
+</head>
+<body>
+
+<!-- LOADING OVERLAY -->
+<div id="loading-overlay">
+  <div class="spinner"></div>
+  <div id="loading-text">INITIALIZING SANN...</div>
+</div>
+
+<!-- TOPBAR -->
+<div id="topbar">
+  <span class="logo">&#9632; SANN</span>
+  <span class="tb-sep">|</span>
+
+  <label class="tb-label">PROJECT</label>
+  <select id="sel-project"><option value="">Default</option></select>
+  <button class="tb-btn" id="btn-upload-project" title="Import dataset from ZIP">&#8853; ZIP</button>
+
+  <span class="tb-sep">|</span>
+
+  <label class="tb-label">PARTICIPANT</label>
+  <select id="sel-participant"><option value="">-- select --</option></select>
+
+  <label class="tb-label">CAST</label>
+  <select id="sel-cast"><option value="">-- video --</option></select>
+
+  <span class="tb-sep">|</span>
+
+  <button class="tb-btn" id="btn-step-back" title="Step back 10s">&#9664;&#9664;</button>
+  <button class="tb-btn" id="btn-playpause" title="Play/Pause">&#9654;</button>
+  <button class="tb-btn" id="btn-step-fwd" title="Step forward 10s">&#9654;&#9654;</button>
+
+  <span class="tb-sep">|</span>
+
+  <label class="tb-label">WINDOW</label>
+  <select id="sel-window" class="tb-window-sel">
+    <option value="5">±5s</option>
+    <option value="10">±10s</option>
+    <option value="30">±30s</option>
+    <option value="60">±60s</option>
+    <option value="120" selected>±120s</option>
+    <option value="300">±5m</option>
+    <option value="600">±10m</option>
+    <option value="1800">±30m</option>
+    <option value="3600">±1h</option>
+  </select>
+
+  <div class="flex-spacer"></div>
+  <span id="tb-cursor-ts">—</span>
+  <span class="tb-sep">|</span>
+  <span id="tb-clock">UTC 00:00:00</span>
+</div>
+
+<!-- MAIN GRID -->
+<div id="main">
+
+  <!-- LEFT HUD -->
+  <div class="hud-col" id="left-col">
+
+    <!-- Terminal Panel -->
+    <div class="hud-panel" id="panel-terminal">
+      <div class="hud-panel-header">
+        <span class="hud-panel-title">&#9632; Terminal</span>
+        <span class="hud-panel-count" id="cnt-terminal">0 cmds</span>
+      </div>
+      <div class="hud-body" id="body-terminal">
+        <div class="ev-row"><div class="ev-meta">no data</div></div>
+      </div>
+    </div>
+
+    <!-- Auth / Session Panel -->
+    <div class="hud-panel" id="panel-auth">
+      <div class="hud-panel-header">
+        <span class="hud-panel-title">&#9632; Auth / Sessions</span>
+        <span class="hud-panel-count" id="cnt-auth">0 events</span>
+      </div>
+      <div class="hud-body" id="body-auth">
+        <div class="ev-row"><div class="ev-meta">no data</div></div>
+      </div>
+    </div>
+
+    <!-- Syslog Panel -->
+    <div class="hud-panel" id="panel-syslog">
+      <div class="hud-panel-header">
+        <span class="hud-panel-title">&#9632; Syslog</span>
+        <span class="hud-panel-count" id="cnt-syslog">0 events</span>
+      </div>
+      <div class="hud-body" id="body-syslog">
+        <div class="ev-row"><div class="ev-meta">no data</div></div>
+      </div>
+    </div>
+
+  </div><!-- /left-col -->
+
+  <!-- CENTER: VIDEO -->
+  <div id="center-col">
+    <div id="media-type-bar">
+      <button class="media-pill active" data-mode="video">VIDEO</button>
+      <button class="media-pill" data-mode="cast">TERMINAL CAST</button>
+    </div>
+    <div id="media-area">
+      <!-- video mode -->
+      <video id="vid-el" preload="metadata" controls></video>
+      <!-- cast mode -->
+      <div id="cast-wrap"></div>
+      <!-- no media placeholder -->
+      <div id="no-media" style="display:none;">
+        <div style="font-size:32px;opacity:0.2;">&#9632;</div>
+        <div>SELECT PARTICIPANT TO BEGIN</div>
+      </div>
+      <!-- video transcoding overlay -->
+      <div id="vid-loading" style="display:none;position:absolute;inset:0;background:rgba(0,0,0,0.85);align-items:center;justify-content:center;flex-direction:column;gap:10px;color:#0ff;font-size:13px;letter-spacing:1px;">
+        <div style="font-size:22px;">⟳</div>
+        <div>TRANSCODING FOR BROWSER COMPATIBILITY…</div>
+        <div style="font-size:11px;opacity:0.6;">OGV/Theora → VP8 WebM via ffmpeg</div>
+      </div>
+    </div>
+  </div><!-- /center-col -->
+
+  <!-- RIGHT HUD -->
+  <div class="hud-col" id="right-col">
+
+    <!-- Network / IDS Panel -->
+    <div class="hud-panel" id="panel-network">
+      <div class="hud-panel-header">
+        <span class="hud-panel-title">&#9632; Network / IDS</span>
+        <span class="hud-panel-count" id="cnt-network">0 events</span>
+      </div>
+      <div class="hud-body" id="body-network">
+        <div class="ev-row"><div class="ev-meta">no data</div></div>
+      </div>
+    </div>
+
+    <!-- Keylogger / UAT Panel -->
+    <div class="hud-panel" id="panel-keylogger">
+      <div class="hud-panel-header">
+        <span class="hud-panel-title">&#9632; Keylogger / UAT</span>
+        <span class="hud-panel-count" id="cnt-keylogger">0 events</span>
+      </div>
+      <div class="hud-body" id="body-keylogger">
+        <div class="ev-row"><div class="ev-meta">no data</div></div>
+      </div>
+    </div>
+
+    <!-- PCAP / Packet Panel -->
+    <div class="hud-panel" id="panel-pcap">
+      <div class="hud-panel-header">
+        <span class="hud-panel-title">&#9632; Packets / Zeek</span>
+        <span class="hud-panel-count" id="cnt-pcap">0 flows</span>
+      </div>
+      <div class="hud-body" id="body-pcap">
+        <div class="ev-row"><div class="ev-meta">no data</div></div>
+      </div>
+    </div>
+
+  </div><!-- /right-col -->
+
+</div><!-- /main -->
+
+<!-- PHASE BAR -->
+<div id="phase-bar">
+  <span class="phase-label">Phase:</span>
+  <div id="phase-badges">
+    <span class="phase-badge" data-phase="reconnaissance"      title="TA0043">Recon</span>
+    <span class="phase-badge" data-phase="resource_development" title="TA0042">ResDev</span>
+    <span class="phase-badge" data-phase="initial_access"      title="TA0001">Init</span>
+    <span class="phase-badge" data-phase="execution"           title="TA0002">Exec</span>
+    <span class="phase-badge" data-phase="persistence"         title="TA0003">Persist</span>
+    <span class="phase-badge" data-phase="privilege_escalation" title="TA0004">PrivEsc</span>
+    <span class="phase-badge" data-phase="defense_evasion"     title="TA0005">DefEvas</span>
+    <span class="phase-badge" data-phase="credential_access"   title="TA0006">CredAcc</span>
+    <span class="phase-badge" data-phase="discovery"           title="TA0007">Disc</span>
+    <span class="phase-badge" data-phase="lateral_movement"    title="TA0008">Lateral</span>
+    <span class="phase-badge" data-phase="collection"          title="TA0009">Collect</span>
+    <span class="phase-badge" data-phase="command_and_control" title="TA0011">C2</span>
+    <span class="phase-badge" data-phase="exfiltration"        title="TA0010">Exfil</span>
+    <span class="phase-badge" data-phase="impact"              title="TA0040">Impact</span>
+    <span class="phase-badge" data-phase="unknown"             title="unknown">?</span>
+  </div>
+  <span id="current-phase-text"></span>
+</div>
+
+<!-- TIMELINE BAR -->
+<div id="timeline-bar">
+  <div id="tl-labels-top">
+    <span id="tl-label-start">—</span>
+    <span style="color: var(--text-dim); font-size:9px; text-transform:uppercase; letter-spacing:1px;">EVENT DENSITY · ATTACK PHASES · MEDIA RANGES</span>
+    <span id="tl-label-end">—</span>
+  </div>
+  <div id="scrubber-wrap">
+    <canvas id="heatmap-canvas"></canvas>
+    <canvas id="media-ranges-canvas"></canvas>
+    <div id="cursor-line"><div id="cursor-tri"></div></div>
+  </div>
+  <div id="tl-labels-bot">
+    <span id="tl-bot-start">—</span>
+    <span id="tl-cursor-label">—</span>
+    <span id="tl-bot-end">—</span>
+  </div>
+</div>
+
+<script>
+// ═══════════════════════════════════════════════════════════════════════════
+// STATE
+// ═══════════════════════════════════════════════════════════════════════════
+const S = {
+  projectId: '',           // active project_id ('' = default/main DB)
+  participantId: null,
+  videoMedia: null,        // media_registry row for video
+  casts: [],               // array of cast media rows
+  activeCastIdx: 0,
+  castPlayer: null,        // asciinema player instance
+  cursorEpoch: 0,          // current cursor position as Unix float
+  globalStart: 0,          // earliest epoch across all media
+  globalEnd: 0,            // latest epoch
+  windowSec: 120,
+  playing: false,
+  dragging: false,
+  playInterval: null,
+  lastFetchEpoch: 0,
+  heatBuckets: [],         // from /api/timeline/phases
+  phaseStart: 0,           // epoch of phase data start (may span months)
+  phaseEnd: 0,             // epoch of phase data end
+  mediaMode: 'video',      // 'video' | 'cast'
+  videoStreamT: 0,         // seek offset (seconds) the current stream was started at
+};
+
+// ═══════════════════════════════════════════════════════════════════════════
+// HELPERS
+// ═══════════════════════════════════════════════════════════════════════════
+function isoToEpoch(s) {
+  if (!s) return 0;
+  const d = new Date(s.endsWith('Z') || s.includes('+') ? s : s + 'Z');
+  return d.getTime() / 1000;
+}
+
+function epochToUTC(epoch) {
+  const d = new Date(epoch * 1000);
+  return d.toISOString().replace('T', ' ').slice(0, 19) + ' UTC';
+}
+
+function epochToISO(epoch) {
+  // Returns ISO 8601 UTC string suitable for DB timestamp_utc comparisons
+  // Use whole-second precision — DB stores timestamps without sub-second parts
+  // for most source_types, and SQLite string compare "19:07:17" >= "19:07:17.000"
+  // is FALSE, which would wrongly exclude events at exact second boundaries.
+  const d = new Date(Math.floor(epoch) * 1000);
+  return d.toISOString().slice(0, 19);  // "2025-08-15T19:07:17" — no Z, no ms
+}
+
+function epochToHHMMSS(epoch) {
+  const d = new Date(epoch * 1000);
+  return d.toISOString().slice(11, 19);
+}
+
+function escHtml(s) {
+  return String(s || '')
+    .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+function phaseClass(p) {
+  const m = {
+    reconnaissance: 'phase-recon', recon: 'phase-recon',
+    resource_development: 'phase-recon',
+    initial_access: 'phase-initial',
+    execution: 'phase-exploit',
+    persistence: 'phase-persist',
+    privilege_escalation: 'phase-lateral',
+    defense_evasion: 'phase-persist',
+    credential_access: 'phase-exploit',
+    discovery: 'phase-initial',
+    lateral_movement: 'phase-lateral',
+    collection: 'phase-lateral',
+    command_and_control: 'phase-c2',
+    exfiltration: 'phase-exfil',
+    impact: 'phase-exfil',
+  };
+  return m[(p||'').toLowerCase()] || 'phase-unknown';
+}
+
+function sevClass(sev) {
+  const n = parseInt(sev) || 0;
+  if (n <= 1) return 'sev-crit';
+  if (n === 2) return 'sev-high';
+  return '';
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// TOAST NOTIFICATIONS
+// ═══════════════════════════════════════════════════════════════════════════
+function showToast(msg, type = 'error') {
+  const toast = document.createElement('div');
+  const colors = { error: '#c83232', warning: '#c8a832', success: '#3ca060' };
+  toast.style.cssText = `position:fixed;bottom:20px;right:20px;z-index:9999;
+    background:${colors[type]||colors.error};color:#fff;padding:8px 14px;
+    border-radius:4px;font-size:12px;font-family:var(--font-mono);
+    letter-spacing:0.5px;max-width:350px;opacity:1;transition:opacity 0.5s`;
+  toast.textContent = msg;
+  document.body.appendChild(toast);
+  setTimeout(() => { toast.style.opacity = '0'; setTimeout(() => toast.remove(), 500); }, 4000);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// INIT
+// ═══════════════════════════════════════════════════════════════════════════
+async function loadProjects() {
+  const resp = await fetch('/api/projects').catch(() => null);
+  if (!resp || !resp.ok) return;
+  const projects = await resp.json();
+  const sel = document.getElementById('sel-project');
+  (projects || []).filter(p => p.status === 'ready' && p.event_count > 0).forEach(p => {
+    const opt = document.createElement('option');
+    opt.value = p.project_id;
+    opt.textContent = `${p.name} (${(p.event_count||0).toLocaleString()} ev)`;
+    sel.appendChild(opt);
+  });
+}
+
+async function loadParticipantsForProject(projectId) {
+  const qs = projectId ? `?project_id=${projectId}` : '';
+  const resp = await fetch(`/api/participants${qs}`).catch(() => null);
+  if (!resp || !resp.ok) return [];
+  const data = await resp.json();
+  return data.participants || [];
+}
+
+async function init() {
+  setLoading('LOADING...');
+  await loadProjects();
+
+  const selProject = document.getElementById('sel-project');
+  const selPart = document.getElementById('sel-participant');
+
+  async function reloadParticipants() {
+    S.projectId = selProject.value;
+    // Reset participant selector
+    selPart.innerHTML = '<option value="">-- select --</option>';
+    const parts = await loadParticipantsForProject(S.projectId);
+    parts.forEach(p => {
+      const opt = document.createElement('option');
+      opt.value = p.participant_id;
+      opt.textContent = `${p.participant_id} — ${p.scenario_name || ''} (${(p.total_events||0).toLocaleString()} ev)`;
+      selPart.appendChild(opt);
+    });
+  }
+
+  await reloadParticipants();
+  hideLoading();
+
+  selProject.addEventListener('change', async () => {
+    // Teardown active media before switching project
+    const vid = document.getElementById('vid-el');
+    vid.pause();
+    vid.removeAttribute('src');
+    vid.load();
+    if (S.castPlayer) { try { S.castPlayer.dispose(); } catch(e) {} S.castPlayer = null; }
+    document.getElementById('vid-loading').style.display = 'none';
+    vid.style.display = 'none';
+    document.getElementById('cast-wrap').innerHTML = '';
+    // Reset all state
+    S.participantId = null;
+    S.videoMedia = null;
+    S.casts = [];
+    S.activeCastIdx = 0;
+    S.cursorEpoch = 0;
+    S.globalStart = 0; S.globalEnd = 0;
+    S.lastFetchEpoch = 0;
+    S.heatBuckets = [];
+    S.phaseStart = 0; S.phaseEnd = 0;
+    S.videoStreamT = 0;
+    S.playing = false;
+    clearInterval(S.playInterval);
+    const ppBtn = document.getElementById('btn-playpause');
+    ppBtn.textContent = '▶'; ppBtn.classList.remove('playing');
+    clearAllPanels();
+    drawTimeline();
+    await reloadParticipants();
+    showNoMedia();
+  });
+
+  const sel = selPart;
+  sel.addEventListener('change', () => {
+    if (!sel.value) return;
+    // Clean up previous participant media
+    const vid = document.getElementById('vid-el');
+    vid.pause();
+    vid.removeAttribute('src');
+    vid.load();
+    if (S.castPlayer) { try { S.castPlayer.dispose(); } catch(e) {} S.castPlayer = null; }
+    document.getElementById('vid-loading').style.display = 'none';
+    document.getElementById('cast-wrap').innerHTML = '';
+    S.playing = false;
+    S.lastFetchEpoch = 0;
+    S.activeCastIdx = 0;
+    S.videoStreamT = 0;
+    const ppBtn = document.getElementById('btn-playpause');
+    ppBtn.textContent = '▶'; ppBtn.classList.remove('playing');
+    clearInterval(S.playInterval);
+    clearAllPanels();
+    loadParticipant(sel.value);
+  });
+  document.getElementById('sel-cast').addEventListener('change', switchCast);
+  document.getElementById('btn-playpause').addEventListener('click', togglePlay);
+  document.getElementById('btn-step-back').addEventListener('click', () => stepBy(-10));
+  document.getElementById('btn-step-fwd').addEventListener('click', () => stepBy(10));
+  document.getElementById('sel-window').addEventListener('change', e => {
+    S.windowSec = parseInt(e.target.value);
+    fetchAllPanels();
+  });
+
+  // media mode pills
+  document.querySelectorAll('.media-pill').forEach(btn => {
+    btn.addEventListener('click', () => {
+      document.querySelectorAll('.media-pill').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      S.mediaMode = btn.dataset.mode;
+      renderMediaMode();
+    });
+  });
+
+  // scrubber
+  const sw = document.getElementById('scrubber-wrap');
+  sw.addEventListener('mousedown', onScrubberDown);
+  sw.addEventListener('click', onScrubberClick);
+  window.addEventListener('mousemove', onScrubberMove);
+  window.addEventListener('mouseup', onScrubberUp);
+
+  // panel event row click → seek to that timestamp
+  document.addEventListener('click', e => {
+    const row = e.target.closest('.ev-row[data-epoch]');
+    if (!row) return;
+    const epoch = parseFloat(row.dataset.epoch);
+    if (!isFinite(epoch)) return;
+    moveCursorTo(epoch, true);
+  });
+
+  // clock
+  setInterval(updateClock, 1000);
+
+  // resize
+  window.addEventListener('resize', () => { drawTimeline(); resizeCastPlayer(); });
+
+  showNoMedia();
+}
+
+function setLoading(msg) {
+  document.getElementById('loading-overlay').style.display = 'flex';
+  document.getElementById('loading-text').textContent = msg;
+}
+function hideLoading() {
+  document.getElementById('loading-overlay').style.display = 'none';
+}
+
+function updateClock() {
+  document.getElementById('tb-clock').textContent =
+    'UTC ' + new Date().toISOString().slice(11, 19);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// LOAD PARTICIPANT
+// ═══════════════════════════════════════════════════════════════════════════
+async function loadParticipant(pid) {
+  if (!pid) return;
+  S.participantId = pid;
+  setLoading('LOADING MEDIA...');
+
+  // 1. Load media list
+  const projQs = S.projectId ? `&project_id=${S.projectId}` : '';
+  const mResp = await fetch(`/api/media/list?participant_id=${pid}${projQs}`).catch(() => null);
+  const mData = mResp ? await mResp.json() : {};
+  const media = mData.media || [];
+
+  // 2. Find video
+  S.videoMedia = media.find(m => m.media_type === 'video') || null;
+
+  // 3. Load casts
+  const cResp = await fetch(`/api/media/cast_list?participant_id=${pid}${projQs}`).catch(() => null);
+  const cData = cResp ? await cResp.json() : {};
+  S.casts = cData.casts || [];
+
+  // Populate cast selector
+  const castSel = document.getElementById('sel-cast');
+  castSel.innerHTML = '<option value="">— video —</option>';
+  S.casts.forEach((c, i) => {
+    const opt = document.createElement('option');
+    opt.value = i;
+    const fname = (c.filename || c.source_file || '').split('/').pop();
+    opt.textContent = `CAST ${i+1}: ${fname}`;
+    castSel.appendChild(opt);
+  });
+
+  // 4. Compute time bounds across all media
+  const allEpochs = media.map(m => isoToEpoch(m.start_timestamp)).filter(Boolean);
+  // Only include items with a real duration — fallback to 3600 skews globalEnd
+  const allEnds   = media
+    .filter(m => m.duration_seconds > 0)
+    .map(m => isoToEpoch(m.start_timestamp) + m.duration_seconds)
+    .filter(Boolean);
+
+  if (allEpochs.length === 0) {
+    hideLoading();
+    showNoMedia();
+    return;
+  }
+
+  S.globalStart = Math.min(...allEpochs);
+  S.globalEnd   = Math.max(...allEnds);
+  S.cursorEpoch = S.globalStart;
+
+  // 5. Load phases heatmap
+  await loadPhases();
+
+  // 6. Load video
+  if (S.videoMedia) {
+    loadVideo(S.videoMedia);
+  } else {
+    showNoMedia();
+  }
+
+  // 7. Draw timeline
+  drawTimeline();
+  updateCursorUI();
+
+  // 8. Cursor stays at globalStart (video start) — no auto-seek to activity bucket
+  //    (auto-seek was removed: it could land in a dead zone between casts)
+
+  // 9. Fetch panels
+  await fetchAllPanels();
+
+  hideLoading();
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// PHASES
+// ═══════════════════════════════════════════════════════════════════════════
+async function loadPhases() {
+  // Pass the media-derived scrubber range so the heatmap buckets are anchored
+  // to exactly [globalStart, globalEnd] — not to the extent of all DB events
+  // (which may span months of background syslog/auth data).
+  const fromISO = epochToISO(S.globalStart);
+  const toISO   = epochToISO(S.globalEnd);
+  const pidParam = S.projectId ? `&project_id=${S.projectId}` : '';
+  const url = `/api/timeline/phases?participant_id=${S.participantId}&buckets=200&from_ts=${encodeURIComponent(fromISO)}&to_ts=${encodeURIComponent(toISO)}${pidParam}`;
+  const resp = await fetch(url).catch(() => null);
+  if (!resp || !resp.ok) return;
+  const d = await resp.json();
+  S.heatBuckets = d.buckets || [];
+  // Phase bounds == scrubber bounds: the API now anchors the grid to our range.
+  S.phaseStart = S.globalStart;
+  S.phaseEnd   = S.globalEnd;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// VIDEO
+// ═══════════════════════════════════════════════════════════════════════════
+// Reload the video stream starting from a specific second offset.
+// OGV/Theora files are served as on-the-fly VP8 WebM streams — native seeking
+// doesn't work in a streaming response, so we reload with a new ?t= offset instead.
+function _reloadVideoStream(pid, tOffset) {
+  const vid = document.getElementById('vid-el');
+  S.videoStreamT = Math.max(0, tOffset);
+  const projQs = S.projectId ? `&project_id=${encodeURIComponent(S.projectId)}` : '';
+  const newSrc = `/api/media/video/${encodeURIComponent(pid)}?t=${S.videoStreamT}${projQs}`;
+  const loading = document.getElementById('vid-loading');
+  loading.style.display = 'flex';
+  vid.style.display = 'none';
+
+  function _clearVidCallbacks() {
+    vid.oncanplay = null;
+    vid.onerror = null;
+    if (window._vidLoadTimeout) { clearTimeout(window._vidLoadTimeout); window._vidLoadTimeout = null; }
+  }
+
+  vid.onerror = () => {
+    _clearVidCallbacks();
+    loading.style.display = 'none';
+    showToast('Video stream error — check that ffmpeg is installed', 'error');
+  };
+  vid.oncanplay = () => {
+    _clearVidCallbacks();
+    loading.style.display = 'none';
+    vid.style.display = 'block';
+  };
+
+  if (window._vidLoadTimeout) clearTimeout(window._vidLoadTimeout);
+  window._vidLoadTimeout = setTimeout(() => {
+    if (loading.style.display !== 'none') {
+      _clearVidCallbacks();
+      loading.style.display = 'none';
+      showToast('Video taking too long — is ffmpeg installed?', 'warning');
+    }
+  }, 30000);
+
+  vid.src = newSrc;
+  vid.load();
+}
+
+function loadVideo(m) {
+  const pid = m.participant_id || S.participantId;
+  const vid = document.getElementById('vid-el');
+  S.videoStreamT = 0;
+
+  // Compute desired offset from cursor so we start at the right point
+  const videoStart = isoToEpoch(m.start_timestamp);
+  const desiredOffset = Math.max(0, S.cursorEpoch - videoStart);
+  _reloadVideoStream(pid, desiredOffset);
+
+  vid.ontimeupdate = () => {
+    if (S.dragging || !S.playing) return;
+    const newEpoch = videoStart + S.videoStreamT + vid.currentTime;
+    if (Math.abs(newEpoch - S.cursorEpoch) > 1.5) {
+      S.cursorEpoch = newEpoch;
+      updateCursorUI();
+    }
+  };
+  vid.onseeked = () => {
+    if (S.dragging) return;
+    S.cursorEpoch = videoStart + S.videoStreamT + vid.currentTime;
+    updateCursorUI();
+    if (Math.abs(S.cursorEpoch - S.lastFetchEpoch) >= 3) {
+      S.lastFetchEpoch = S.cursorEpoch;
+      fetchAllPanels();
+    }
+  };
+
+  if (S.mediaMode === 'video') {
+    document.getElementById('cast-wrap').style.display = 'none';
+    document.getElementById('no-media').style.display = 'none';
+  }
+}
+
+function syncVideoToCursor() {
+  if (!S.videoMedia) return;
+  const vid = document.getElementById('vid-el');
+  const videoStart = isoToEpoch(S.videoMedia.start_timestamp);
+  const desiredOffset = S.cursorEpoch - videoStart;
+  if (!isFinite(desiredOffset)) return;
+
+  const clampedOffset = Math.max(0, Math.min(
+    desiredOffset,
+    S.videoMedia.duration_seconds || Infinity
+  ));
+
+  // For a streaming response the browser can't seek natively.
+  // Reload the stream if the desired position is far from where we're streaming.
+  const streamPos = S.videoStreamT + (isFinite(vid.currentTime) ? vid.currentTime : 0);
+  const delta = clampedOffset - streamPos;
+
+  if (Math.abs(delta) > 8) {
+    // Big jump — restart stream at desired position (2s pre-roll for ffmpeg key-frame)
+    _reloadVideoStream(S.participantId, Math.max(0, clampedOffset - 2));
+  } else if (delta > 0.5 && delta <= 8) {
+    // Small forward seek — try native currentTime (works if already buffered)
+    try { vid.currentTime += delta; } catch(e) {}
+  }
+  // Small backward delta (<0.5s) or negative: leave as-is to avoid reload loops
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// CAST
+// ═══════════════════════════════════════════════════════════════════════════
+function switchCast() {
+  const sel = document.getElementById('sel-cast');
+  const idx = sel.value;
+  if (idx === '' || idx === null) {
+    S.mediaMode = 'video';
+    document.querySelectorAll('.media-pill').forEach(b => b.classList.toggle('active', b.dataset.mode === 'video'));
+    renderMediaMode();
+    return;
+  }
+  S.activeCastIdx = parseInt(idx);
+  S.mediaMode = 'cast';
+  document.querySelectorAll('.media-pill').forEach(b => b.classList.toggle('active', b.dataset.mode === 'cast'));
+  renderMediaMode();
+  loadCast(S.activeCastIdx);
+}
+
+function loadCast(idx) {
+  const cast = S.casts[idx];
+  if (!cast) return;
+  if (S.castPlayer) { try { S.castPlayer.dispose(); } catch(e) {} S.castPlayer = null; }
+  const wrap = document.getElementById('cast-wrap');
+  wrap.innerHTML = '';
+
+  const mediaId = cast.media_id;
+  const projQs = S.projectId ? `?project_id=${encodeURIComponent(S.projectId)}` : '';
+  const url = `/api/media/cast_raw/${encodeURIComponent(mediaId)}${projQs}`;
+  S.castPlayer = AsciinemaPlayer.create(url, wrap, {
+    autoPlay: false,
+    loop: false,
+    preload: true,
+    theme: 'asciinema',
+    fit: 'both',
+    terminalFontSize: '11px',
+  });
+  // Seek after player has had time to initialize (preload is async)
+  setTimeout(() => syncCastToCursor(), 800);
+}
+
+function syncCastToCursor() {
+  if (!S.castPlayer || !S.casts.length) return;
+  const cast = S.casts[S.activeCastIdx];
+  if (!cast) return;
+  const castStart = isoToEpoch(cast.start_timestamp);
+  const offset = S.cursorEpoch - castStart;
+  if (offset >= 0 && isFinite(offset)) {
+    try { S.castPlayer.seek(offset); } catch(e) {}
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// MEDIA MODE RENDER
+// ═══════════════════════════════════════════════════════════════════════════
+function renderMediaMode() {
+  const vid = document.getElementById('vid-el');
+  const castWrap = document.getElementById('cast-wrap');
+  const noMedia = document.getElementById('no-media');
+  const loading = document.getElementById('vid-loading');
+
+  if (S.mediaMode === 'video') {
+    loading.style.display = 'none';
+    vid.style.display = S.videoMedia ? 'block' : 'none';
+    castWrap.style.display = 'none';
+    noMedia.style.display = S.videoMedia ? 'none' : 'flex';
+    if (S.videoMedia) syncVideoToCursor();
+  } else {
+    loading.style.display = 'none';
+    vid.style.display = 'none';
+    castWrap.style.display = S.casts.length ? 'flex' : 'none';
+    noMedia.style.display = S.casts.length ? 'none' : 'flex';
+    if (S.casts.length) {
+      if (!S.castPlayer) loadCast(S.activeCastIdx);
+      else syncCastToCursor();
+    }
+  }
+}
+
+function showNoMedia() {
+  document.getElementById('vid-el').style.display = 'none';
+  document.getElementById('cast-wrap').style.display = 'none';
+  document.getElementById('no-media').style.display = 'flex';
+}
+
+function clearAllPanels() {
+  const panels = ['terminal','auth','syslog','network','keylogger','pcap'];
+  panels.forEach(p => {
+    const body = document.getElementById('body-' + p);
+    const cnt  = document.getElementById('cnt-' + p);
+    if (body) body.innerHTML = '<div class="ev-row"><div class="ev-meta">no data</div></div>';
+    if (cnt)  cnt.textContent = '—';
+  });
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// PLAYBACK CONTROL
+// ═══════════════════════════════════════════════════════════════════════════
+function togglePlay() {
+  S.playing = !S.playing;
+  const btn = document.getElementById('btn-playpause');
+
+  if (S.playing) {
+    btn.textContent = '⏸';
+    btn.classList.add('playing');
+
+    // sync media position to current cursor before starting playback
+    syncVideoToCursor();
+
+    // play video or cast
+    if (S.mediaMode === 'video' && S.videoMedia) {
+      document.getElementById('vid-el').play().catch(() => {});
+    } else if (S.mediaMode === 'cast' && S.castPlayer) {
+      try { S.castPlayer.play(); } catch(e) {}
+    }
+
+    // master ticker: advance cursor epoch from video or cast time
+    S.playInterval = setInterval(() => {
+      if (!S.playing) return;
+      if (S.mediaMode === 'video' && S.videoMedia) {
+        const vid = document.getElementById('vid-el');
+        const videoStart = isoToEpoch(S.videoMedia.start_timestamp);
+        S.cursorEpoch = videoStart + S.videoStreamT + vid.currentTime;
+      } else if (S.mediaMode === 'cast' && S.castPlayer && S.casts[S.activeCastIdx]) {
+        try {
+          const castT = typeof S.castPlayer.getCurrentTime === 'function'
+            ? S.castPlayer.getCurrentTime()
+            : (S.castPlayer.currentTime ?? 0);
+          const castStart = isoToEpoch(S.casts[S.activeCastIdx].start_timestamp);
+          S.cursorEpoch = castStart + castT;
+        } catch(e) { S.cursorEpoch += 0.25; }
+      } else {
+        S.cursorEpoch += 0.25;
+      }
+      updateCursorUI();
+      // Fetch panels every ~5s of video time (debounced, not modulo-aligned)
+      if (Math.abs(S.cursorEpoch - S.lastFetchEpoch) >= 5) {
+        S.lastFetchEpoch = S.cursorEpoch;
+        fetchAllPanels();
+      }
+    }, 250);
+
+  } else {
+    btn.textContent = '▶';
+    btn.classList.remove('playing');
+    clearInterval(S.playInterval);
+
+    if (S.mediaMode === 'video') {
+      document.getElementById('vid-el').pause();
+    } else if (S.castPlayer) {
+      try { S.castPlayer.pause(); } catch(e) {}
+    }
+
+    fetchAllPanels();
+  }
+}
+
+function stepBy(secs) {
+  S.cursorEpoch += secs;
+  S.cursorEpoch = Math.max(S.globalStart, Math.min(S.globalEnd, S.cursorEpoch));
+  syncVideoToCursor();
+  if (!S.dragging) syncCastToCursor();
+  updateCursorUI();
+  fetchAllPanels();
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// SCRUBBER
+// ═══════════════════════════════════════════════════════════════════════════
+function scrubberPosToEpoch(clientX) {
+  const wrap = document.getElementById('scrubber-wrap');
+  const rect = wrap.getBoundingClientRect();
+  const ratio = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
+  return S.globalStart + ratio * (S.globalEnd - S.globalStart);
+}
+
+function epochToScrubberPct(epoch) {
+  if (S.globalEnd === S.globalStart) return 0;
+  return (epoch - S.globalStart) / (S.globalEnd - S.globalStart);
+}
+
+function onScrubberDown(e) {
+  if (e.target.id === 'cursor-line' || e.target.id === 'cursor-tri') return;
+  S.dragging = true;
+  moveCursorTo(scrubberPosToEpoch(e.clientX), false);
+}
+function onScrubberMove(e) {
+  if (!S.dragging) return;
+  moveCursorTo(scrubberPosToEpoch(e.clientX), false);
+}
+function onScrubberUp(e) {
+  if (!S.dragging) return;
+  S.dragging = false;
+  moveCursorTo(scrubberPosToEpoch(e.clientX), true);
+}
+function onScrubberClick(e) {
+  if (S.dragging) return;
+  moveCursorTo(scrubberPosToEpoch(e.clientX), true);
+}
+
+function moveCursorTo(epoch, full) {
+  S.cursorEpoch = Math.max(S.globalStart, Math.min(S.globalEnd, epoch));
+  updateCursorUI();
+  if (full) {
+    S.lastFetchEpoch = S.cursorEpoch;
+    syncVideoToCursor();
+    syncCastToCursor();
+    fetchAllPanels();
+  }
+}
+
+function updateCursorUI() {
+  const pct = epochToScrubberPct(S.cursorEpoch);
+  const cl = document.getElementById('cursor-line');
+  cl.style.left = (pct * 100).toFixed(3) + '%';
+
+  const ts = epochToUTC(S.cursorEpoch);
+  document.getElementById('tb-cursor-ts').textContent = ts;
+  document.getElementById('tl-cursor-label').textContent = ts;
+
+  updatePhaseBadge();
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// PHASE BADGE
+// ═══════════════════════════════════════════════════════════════════════════
+function updatePhaseBadge() {
+  if (!S.heatBuckets.length) {
+    document.querySelectorAll('.phase-badge').forEach(b => b.classList.remove('active'));
+    document.getElementById('current-phase-text').textContent = '';
+    return;
+  }
+  // Use phase data's own time range for bucket indexing (may differ from media globalStart)
+  const pStart = S.phaseStart || S.globalStart;
+  const pEnd   = S.phaseEnd   || S.globalEnd;
+  const span = pEnd - pStart;
+  if (span <= 0) return;
+
+  const ratio = (S.cursorEpoch - pStart) / span;
+  const idx = Math.max(0, Math.min(S.heatBuckets.length - 1,
+    Math.floor(ratio * S.heatBuckets.length)));
+
+  const bucket = S.heatBuckets[idx];
+  if (!bucket || !bucket.total) {
+    document.querySelectorAll('.phase-badge').forEach(b => b.classList.remove('active'));
+    document.getElementById('current-phase-text').textContent = '';
+    return;
+  }
+
+  const dom = (bucket.dominant_phase || 'unknown').toLowerCase();
+  document.querySelectorAll('.phase-badge').forEach(b => {
+    b.classList.toggle('active', b.dataset.phase === dom);
+  });
+  document.getElementById('current-phase-text').textContent =
+    dom !== 'unknown' ? `Current: ${dom.toUpperCase()}` : '';
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// TIMELINE CANVAS DRAW
+// ═══════════════════════════════════════════════════════════════════════════
+function drawTimeline() {
+  const wrap = document.getElementById('scrubber-wrap');
+  const W = wrap.clientWidth;
+  const H = wrap.clientHeight;
+  if (!W || !H) return;
+
+  drawHeatmap(W, H);
+  drawMediaRanges(W, H);
+  drawTimeLabels();
+}
+
+function drawHeatmap(W, H) {
+  const canvas = document.getElementById('heatmap-canvas');
+  canvas.width = W; canvas.height = H;
+  const ctx = canvas.getContext('2d');
+  ctx.clearRect(0, 0, W, H);
+
+  if (!S.heatBuckets.length) return;
+
+  const maxTotal = Math.max(...S.heatBuckets.map(b => b.total || 0), 1);
+  const bw = W / S.heatBuckets.length;
+
+  // Phase color map — 14 MITRE ATT&CK tactics
+  const phasePalette = {
+    reconnaissance: '#3ca060', recon: '#3ca060',
+    resource_development: '#50b46e',
+    initial_access: '#2a8ad4',
+    execution: '#c83232',
+    persistence: '#7b5ea7',
+    privilege_escalation: '#9664c8',
+    defense_evasion: '#64b4b4',
+    credential_access: '#f48fb1',
+    discovery: '#b0bec5',
+    lateral_movement: '#c8a832',
+    collection: '#26c6da',
+    command_and_control: '#ef5350',
+    exfiltration: '#e07b39',
+    impact: '#d32f2f',
+    unknown: '#2a3040',
+  };
+
+  S.heatBuckets.forEach((b, i) => {
+    const x = i * bw;
+    const ratio = (b.total || 0) / maxTotal;
+    const barH = Math.max(2, ratio * H * 0.85);
+    const y = H - barH;
+    const phase = (b.dominant_phase || 'unknown').toLowerCase();
+    const color = phasePalette[phase] || '#2a3040';
+
+    ctx.fillStyle = color;
+    ctx.globalAlpha = 0.25 + ratio * 0.55;
+    ctx.fillRect(x, y, Math.max(1, bw - 0.5), barH);
+  });
+  ctx.globalAlpha = 1;
+}
+
+function drawMediaRanges(W, H) {
+  const canvas = document.getElementById('media-ranges-canvas');
+  canvas.width = W; canvas.height = H;
+  const ctx = canvas.getContext('2d');
+  ctx.clearRect(0, 0, W, H);
+
+  if (!S.participantId || S.globalEnd === S.globalStart) return;
+
+  const totalSpan = S.globalEnd - S.globalStart;
+  const trackColors = {
+    video: '#1e6fb5',
+    terminal: '#3ca060',
+    keylogger: '#c8a832',
+  };
+
+  const allMedia = [];
+  if (S.videoMedia) allMedia.push({ ...S.videoMedia, media_type: 'video' });
+  S.casts.forEach(c => allMedia.push({ ...c, media_type: 'terminal' }));
+
+  allMedia.forEach((m, trackIdx) => {
+    const start = isoToEpoch(m.start_timestamp);
+    const dur = m.duration_seconds > 0 ? m.duration_seconds : (S.globalEnd - start);
+    const end = start + dur;
+    const x1 = ((start - S.globalStart) / totalSpan) * W;
+    const x2 = ((end   - S.globalStart) / totalSpan) * W;
+    const y = Math.max(2, H - 6 - trackIdx * 5);  // clamp: prevent negative y with many tracks
+
+    ctx.fillStyle = trackColors[m.media_type] || '#555';
+    ctx.globalAlpha = 0.7;
+    ctx.fillRect(x1, y - 3, Math.max(2, x2 - x1), 3);
+    ctx.globalAlpha = 1;
+  });
+}
+
+function drawTimeLabels() {
+  if (!S.globalStart) return;
+  document.getElementById('tl-label-start').textContent = epochToUTC(S.globalStart);
+  document.getElementById('tl-label-end').textContent   = epochToUTC(S.globalEnd);
+  document.getElementById('tl-bot-start').textContent   = epochToHHMMSS(S.globalStart) + ' UTC';
+  document.getElementById('tl-bot-end').textContent     = epochToHHMMSS(S.globalEnd) + ' UTC';
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// PANEL DATA FETCHING
+// ═══════════════════════════════════════════════════════════════════════════
+let fetchAbortCtrl = null;
+
+async function fetchAllPanels() {
+  if (!S.participantId || S.cursorEpoch === null || S.cursorEpoch === undefined) return;
+
+  if (fetchAbortCtrl) fetchAbortCtrl.abort();
+  fetchAbortCtrl = new AbortController();
+  const sig = fetchAbortCtrl.signal;
+
+  const win = S.windowSec;
+  const from = epochToISO(S.cursorEpoch - win);
+  const to   = epochToISO(S.cursorEpoch + win);
+  const pid  = S.participantId;
+
+  const sources = [
+    { key: 'terminal',  types: 'terminal_recording', limit: 200 },
+    { key: 'auth',      types: 'auth',               limit: 200 },
+    { key: 'syslog',    types: 'syslog',              limit: 200 },
+    { key: 'network',   types: 'suricata,bt_jsonl',  limit: 200 },
+    { key: 'keylogger', types: 'uat',                 limit: 200 },
+    { key: 'pcap',      types: 'zeek,sensor',          limit: 200 },
+  ];
+
+  const projParam = S.projectId ? `&project_id=${S.projectId}` : '';
+  // Fire all fetches in parallel
+  const fetches = sources.map(s =>
+    fetch(`/api/events/stream?participant_id=${pid}&source_type=${s.types}&from_ts=${from}&to_ts=${to}&limit=${s.limit}${projParam}`, { signal: sig })
+      .then(r => r.json())
+      .then(d => ({ key: s.key, events: d.events || [] }))
+      .catch(() => ({ key: s.key, events: [] }))
+  );
+
+  const results = await Promise.all(fetches).catch(() => []);
+
+  results.forEach(r => {
+    switch(r.key) {
+      case 'terminal':  renderTerminal(r.events);   break;
+      case 'auth':      renderAuth(r.events);        break;
+      case 'syslog':    renderSyslog(r.events);      break;
+      case 'network':   renderNetwork(r.events);     break;
+      case 'keylogger': renderKeylogger(r.events);   break;
+      case 'pcap':      renderPcap(r.events);        break;
+    }
+  });
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// PANEL RENDERERS
+// ═══════════════════════════════════════════════════════════════════════════
+
+function timeLabel(ts) {
+  // Show only HH:MM:SS from ISO timestamp
+  return (ts || '').slice(11, 19);
+}
+
+const _PANEL_MAX = 200;
+
+function _panelAtBottom(el) {
+  return el.scrollTop + el.clientHeight >= el.scrollHeight - 50;
+}
+
+function _panelUpdate(body, cnt, html, total, unit) {
+  const shown = Math.min(total, _PANEL_MAX);
+  cnt.textContent = total > _PANEL_MAX
+    ? `${shown} of ${total} (last ${_PANEL_MAX})`
+    : `${total} ${unit}`;
+  const atBottom = _panelAtBottom(body);
+  body.innerHTML = html;
+  if (atBottom) body.scrollTop = body.scrollHeight;
+}
+
+function renderTerminal(events) {
+  const body = document.getElementById('body-terminal');
+  const cnt  = document.getElementById('cnt-terminal');
+  if (!events.length) { body.innerHTML = '<div class="ev-row"><div class="ev-meta">no events in window</div></div>'; cnt.textContent = '0 cmds'; return; }
+
+  const vis = events.slice(-_PANEL_MAX);
+  const html = vis.map(e => {
+    const cmd = e.command || e.action_name || '';
+    const phase = e.attack_phase || '';
+    const tactic = e.mitre_tactic || '';
+    const tech = e.mitre_technique || '';
+    const pc = phaseClass(phase);
+    const near = Math.abs(isoToEpoch(e.timestamp_utc) - S.cursorEpoch) < 5;
+    const epoch = isoToEpoch(e.timestamp_utc);
+    return `<div class="ev-row ${pc}${near ? ' event-near' : ''}" data-epoch="${epoch}">
+      <div class="ev-time">${timeLabel(e.timestamp_utc)}</div>
+      <div class="cmd-text">$ ${escHtml(cmd)}</div>
+      ${phase ? `<div class="cmd-phase">${escHtml(phase)}${tactic ? ' · ' + escHtml(tactic) : ''}</div>` : ''}
+      ${tech ? `<div class="cmd-mitre">${escHtml(tech)}</div>` : ''}
+    </div>`;
+  }).join('');
+  _panelUpdate(body, cnt, html, events.length, 'cmds');
+}
+
+function renderAuth(events) {
+  const body = document.getElementById('body-auth');
+  const cnt  = document.getElementById('cnt-auth');
+  if (!events.length) { body.innerHTML = '<div class="ev-row"><div class="ev-meta">no events in window</div></div>'; cnt.textContent = '0 events'; return; }
+
+  const vis = events.slice(-_PANEL_MAX);
+  const html = vis.map(e => {
+    const user = e.user || e.username || '?';
+    const host = e.source_host || '';
+    const action = e.action_name || '';
+    const src_ip = e.src_ip || '';
+    const pc = phaseClass(e.attack_phase);
+    const epoch = isoToEpoch(e.timestamp_utc);
+    return `<div class="ev-row ${pc}" data-epoch="${epoch}">
+      <div class="ev-time">${timeLabel(e.timestamp_utc)}</div>
+      <div class="ev-main auth-user">${escHtml(user)}${host ? '@' + escHtml(host) : ''}</div>
+      <div class="ev-meta auth-action">${escHtml(action)}${src_ip ? ' · ' + escHtml(src_ip) : ''}</div>
+    </div>`;
+  }).join('');
+  _panelUpdate(body, cnt, html, events.length, 'events');
+}
+
+function renderSyslog(events) {
+  const body = document.getElementById('body-syslog');
+  const cnt  = document.getElementById('cnt-syslog');
+  if (!events.length) { body.innerHTML = '<div class="ev-row"><div class="ev-meta">no events in window</div></div>'; cnt.textContent = '0 events'; return; }
+
+  const vis = events.slice(-_PANEL_MAX);
+  const html = vis.map(e => {
+    const action = e.action_name || '';
+    const host = e.source_host || '';
+    const cmd = e.command || e.raw_data || '';
+    const pc = phaseClass(e.attack_phase);
+    const epoch = isoToEpoch(e.timestamp_utc);
+    return `<div class="ev-row ${pc}" data-epoch="${epoch}">
+      <div class="ev-time">${timeLabel(e.timestamp_utc)}</div>
+      <div class="ev-main">${escHtml(action)}${host ? ' <span style="color:var(--text-dim)">· ' + escHtml(host) + '</span>' : ''}</div>
+      ${cmd ? `<div class="ev-meta">${escHtml(String(cmd).slice(0, 120))}</div>` : ''}
+    </div>`;
+  }).join('');
+  _panelUpdate(body, cnt, html, events.length, 'events');
+}
+
+function renderNetwork(events) {
+  const body = document.getElementById('body-network');
+  const cnt  = document.getElementById('cnt-network');
+  const filtered = events.filter(e => e.action_name !== 'ids_stats');
+  if (!filtered.length) { body.innerHTML = '<div class="ev-row"><div class="ev-meta">no events in window</div></div>'; cnt.textContent = '0 events'; return; }
+
+  const vis = filtered.slice(-_PANEL_MAX);
+  const html = vis.map(e => {
+    const isAlert = e.action_name === 'ids_alert' || e.alert_type;
+    const src = e.src_ip || '';
+    const dst = e.dest_ip || '';
+    const port = e.dest_port ? ':' + e.dest_port : '';
+    const proto = e.protocol || '';
+    const alert = e.alert_type || e.action_name || '';
+    const sev = sevClass(e.alert_severity);
+    const pc = phaseClass(e.attack_phase);
+    const tactic = e.mitre_tactic || '';
+    const epoch = isoToEpoch(e.timestamp_utc);
+    return `<div class="ev-row ${isAlert ? 'sev-crit' : pc} ${sev}" data-epoch="${epoch}">
+      <div class="ev-time">${timeLabel(e.timestamp_utc)}</div>
+      ${src || dst ? `<div class="ev-main net-flow">${escHtml(src)} <span style="color:var(--text-dim)">→</span> ${escHtml(dst)}${escHtml(port)}</div>` : ''}
+      ${isAlert ? `<div class="ev-main net-alert">&#9888; ${escHtml(alert)}</div>` : `<div class="ev-meta">${escHtml(alert)}</div>`}
+      <div class="ev-meta net-proto">${proto ? escHtml(proto) : ''}${tactic ? ' · ' + escHtml(tactic) : ''}</div>
+    </div>`;
+  }).join('');
+  _panelUpdate(body, cnt, html, filtered.length, 'events');
+}
+
+function renderKeylogger(events) {
+  const body = document.getElementById('body-keylogger');
+  const cnt  = document.getElementById('cnt-keylogger');
+  if (!events.length) { body.innerHTML = '<div class="ev-row"><div class="ev-meta">no events in window</div></div>'; cnt.textContent = '0 events'; return; }
+
+  const vis = events.slice(-_PANEL_MAX);
+  const html = vis.map(e => {
+    const typed = e.typed_text || '';
+    const app = e.tool || '';
+    const win = e.window || '';
+    const evtype = e.action_name || '';
+    const epoch = isoToEpoch(e.timestamp_utc);
+    return `<div class="ev-row" data-epoch="${epoch}">
+      <div class="ev-time">${timeLabel(e.timestamp_utc)}</div>
+      ${typed ? `<div class="ev-main key-typed">${escHtml(typed.slice(0, 120))}</div>` : `<div class="ev-meta">${escHtml(evtype)}</div>`}
+      ${(app || win) ? `<div class="key-window">${escHtml(app || '')}${win ? ' — ' + escHtml(win.slice(0, 60)) : ''}</div>` : ''}
+    </div>`;
+  }).join('');
+  _panelUpdate(body, cnt, html, events.length, 'events');
+}
+
+function renderPcap(events) {
+  const body = document.getElementById('body-pcap');
+  const cnt  = document.getElementById('cnt-pcap');
+  if (!events.length) { body.innerHTML = '<div class="ev-row"><div class="ev-meta">no events in window</div></div>'; cnt.textContent = '0 flows'; return; }
+
+  // Filter: zeek always passes; sensor_packet only if it has IPs or a useful action
+  const filtered = events.filter(e =>
+    e.source_type !== 'sensor' ||
+    e.action_name === 'http_traffic' ||
+    e.action_name === 'ids_alert' ||
+    e.action_name === 'ssh_session' ||
+    e.action_name === 'attack_status' ||
+    (e.src_ip && e.dest_ip)
+  );
+  const vis = filtered.slice(-_PANEL_MAX);
+  const html = vis.map(e => {
+    const src = e.src_ip || '';
+    const dst = e.dest_ip || '';
+    const port = e.dest_port ? ':' + e.dest_port : '';
+    const proto = e.protocol || '';
+    const action = e.action_name || '';
+    const pc = phaseClass(e.attack_phase);
+    const epoch = isoToEpoch(e.timestamp_utc);
+    return `<div class="ev-row ${pc}" data-epoch="${epoch}">
+      <div class="ev-time">${timeLabel(e.timestamp_utc)}</div>
+      ${src || dst ? `<div class="ev-main net-flow">${escHtml(src)} → ${escHtml(dst)}${escHtml(port)}</div>` : ''}
+      <div class="ev-meta net-proto">${escHtml(proto)}${action ? ' · ' + escHtml(action) : ''}</div>
+    </div>`;
+  }).join('');
+  _panelUpdate(body, cnt, html, filtered.length, 'flows');
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// ZIP UPLOAD
+// ═══════════════════════════════════════════════════════════════════════════
+function openUploadModal() {
+  document.getElementById('upload-modal').style.display = 'flex';
+}
+function closeUploadModal() {
+  document.getElementById('upload-modal').style.display = 'none';
+  document.getElementById('upload-form').reset();
+  document.getElementById('upload-status').textContent = '';
+}
+
+async function submitUpload(e) {
+  e.preventDefault();
+  const nameEl  = document.getElementById('upload-name');
+  const fileEl  = document.getElementById('upload-file');
+  const ipsEl   = document.getElementById('upload-ips');
+  const status  = document.getElementById('upload-status');
+
+  if (!fileEl.files[0]) { showToast('Select a ZIP file first', 'warning'); return; }
+
+  const fd = new FormData();
+  fd.append('name', nameEl.value || fileEl.files[0].name.replace('.zip',''));
+  fd.append('file', fileEl.files[0]);
+  fd.append('attacker_ips', ipsEl.value || '');
+
+  status.textContent = 'Uploading…';
+  const resp = await fetch('/api/projects/upload', { method: 'POST', body: fd }).catch(() => null);
+  if (!resp || !resp.ok) {
+    const err = resp ? await resp.json().catch(() => ({})) : {};
+    status.textContent = '';
+    showToast('Upload failed: ' + (err.detail || 'unknown error'), 'error');
+    return;
+  }
+  const data = await resp.json();
+  status.textContent = `Ingesting… (project ${data.project_id})`;
+  showToast(`Project "${data.name}" created — ingestion running in background`, 'success');
+
+  // Poll until ready, then reload project list
+  const pid = data.project_id;
+  const poll = setInterval(async () => {
+    const r = await fetch(`/api/projects/${pid}/status`).catch(() => null);
+    if (!r || !r.ok) return;
+    const d = await r.json();
+    status.textContent = `Ingesting… ${(d.event_count||0).toLocaleString()} events so far`;
+    if (d.status === 'ready' && d.event_count > 0) {
+      clearInterval(poll);
+      status.textContent = `Done — ${d.event_count.toLocaleString()} events`;
+      setTimeout(async () => {
+        closeUploadModal();
+        // Reload project selector
+        const sel = document.getElementById('sel-project');
+        const prevVal = sel.value;
+        while (sel.options.length > 1) sel.remove(1);
+        await loadProjects();
+        sel.value = prevVal;
+        showToast(`Project "${data.name}" ready`, 'success');
+      }, 1200);
+    }
+  }, 3000);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// BOOT
+// ═══════════════════════════════════════════════════════════════════════════
+window.addEventListener('DOMContentLoaded', () => {
+  document.getElementById('btn-upload-project').addEventListener('click', openUploadModal);
+  document.getElementById('upload-form').addEventListener('submit', submitUpload);
+  document.getElementById('upload-cancel').addEventListener('click', closeUploadModal);
+  document.getElementById('upload-modal').addEventListener('click', e => {
+    if (e.target === document.getElementById('upload-modal')) closeUploadModal();
+  });
+  init();
+});
+</script>
+
+<!-- ZIP UPLOAD MODAL -->
+<div id="upload-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.75);z-index:1000;align-items:center;justify-content:center;">
+  <div style="background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:28px 32px;min-width:380px;max-width:480px;width:100%;">
+    <div style="font-size:13px;font-weight:700;letter-spacing:2px;color:var(--accent2);margin-bottom:20px;text-transform:uppercase;">Import Dataset ZIP</div>
+    <form id="upload-form" autocomplete="off">
+      <div style="margin-bottom:14px;">
+        <label style="display:block;font-size:11px;color:var(--text-dim);margin-bottom:5px;text-transform:uppercase;letter-spacing:1px;">Project Name</label>
+        <input id="upload-name" type="text" placeholder="e.g. P032" style="width:100%;background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:6px 10px;border-radius:3px;font-size:12px;font-family:var(--font-ui);">
+      </div>
+      <div style="margin-bottom:14px;">
+        <label style="display:block;font-size:11px;color:var(--text-dim);margin-bottom:5px;text-transform:uppercase;letter-spacing:1px;">ZIP File <span style="color:var(--red)">*</span></label>
+        <input id="upload-file" type="file" accept=".zip" required style="width:100%;background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:6px 10px;border-radius:3px;font-size:12px;cursor:pointer;">
+      </div>
+      <div style="margin-bottom:20px;">
+        <label style="display:block;font-size:11px;color:var(--text-dim);margin-bottom:5px;text-transform:uppercase;letter-spacing:1px;">Attacker IPs <span style="color:var(--text-dim)">(optional, comma-sep)</span></label>
+        <input id="upload-ips" type="text" placeholder="e.g. 128.16.11.9,114.0.194.2" style="width:100%;background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:6px 10px;border-radius:3px;font-size:12px;font-family:var(--font-mono);">
+      </div>
+      <div style="display:flex;gap:10px;align-items:center;">
+        <button type="submit" class="tb-btn" style="background:var(--accent);border-color:var(--accent2);color:#fff;padding:6px 18px;font-size:12px;">Import</button>
+        <button type="button" id="upload-cancel" class="tb-btn" style="font-size:12px;">Cancel</button>
+        <span id="upload-status" style="font-size:11px;color:var(--text-dim);font-family:var(--font-mono);margin-left:4px;"></span>
+      </div>
+    </form>
+  </div>
+</div>
+</body>
+</html>
