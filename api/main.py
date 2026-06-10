@@ -970,15 +970,20 @@ async def get_media(participant_id: Optional[str] = None, project_id: str = ""):
 
 @app.get("/api/stats")
 async def get_stats(project_id: str = ""):
-    total = qp(project_id, "SELECT COUNT(*) n FROM events")[0]["n"]
+    def _scalar(sql: str, key: str = "n", default=0):
+        r = qp(project_id, sql)
+        return r[0][key] if r else default
+
+    total = _scalar("SELECT COUNT(*) n FROM events")
     by_participant = qp(project_id, "SELECT participant_id, COUNT(*) n FROM events GROUP BY participant_id ORDER BY n DESC")
     by_phase = qp(project_id, "SELECT attack_phase, COUNT(*) n FROM events GROUP BY attack_phase ORDER BY n DESC")
     by_source = qp(project_id, "SELECT source_type, COUNT(*) n FROM events GROUP BY source_type ORDER BY n DESC")
     by_category = qp(project_id, "SELECT action_category, COUNT(*) n FROM events GROUP BY action_category ORDER BY n DESC")
-    commands = qp(project_id, "SELECT COUNT(*) n FROM events WHERE command != '' AND command IS NOT NULL")[0]["n"]
-    typed = qp(project_id, "SELECT COUNT(*) n FROM events WHERE typed_text != '' AND typed_text IS NOT NULL")[0]["n"]
-    alerts = qp(project_id, "SELECT COUNT(*) n FROM events WHERE alert_type != '' AND alert_type IS NOT NULL")[0]["n"]
-    time_range = qp(project_id, "SELECT MIN(timestamp_utc) t0, MAX(timestamp_utc) t1 FROM events WHERE timestamp_utc != '' AND timestamp_utc IS NOT NULL")[0]
+    commands = _scalar("SELECT COUNT(*) n FROM events WHERE command != '' AND command IS NOT NULL")
+    typed = _scalar("SELECT COUNT(*) n FROM events WHERE typed_text != '' AND typed_text IS NOT NULL")
+    alerts = _scalar("SELECT COUNT(*) n FROM events WHERE alert_type != '' AND alert_type IS NOT NULL")
+    tr_rows = qp(project_id, "SELECT MIN(timestamp_utc) t0, MAX(timestamp_utc) t1 FROM events WHERE timestamp_utc != '' AND timestamp_utc IS NOT NULL")
+    time_range = tr_rows[0] if tr_rows else {"t0": None, "t1": None}
 
     return {
         "total_events": total,
@@ -1218,6 +1223,8 @@ def _normalize_path_input(raw: str) -> str:
         s = f'/mnt/{drive}/{rest}'
     else:
         s = s.replace('\\', '/')
+    if s.startswith('~'):
+        s = str(Path(s).expanduser())
     return s
 
 
@@ -2382,7 +2389,7 @@ async def timeline_phases(
 @app.get("/api/stats/participant")
 async def participant_stats(participant_id: str, project_id: str = ""):
     """Summary stats for a participant — counts, top IPs, top hosts, top commands."""
-    base = qp(
+    base_rows = qp(
         project_id,
         """SELECT COUNT(*) total,
                   COUNT(DISTINCT source_host) hosts,
@@ -2392,7 +2399,11 @@ async def participant_stats(participant_id: str, project_id: str = ""):
                   MAX(timestamp_utc) last_ts
            FROM events WHERE participant_id=?""",
         (participant_id,),
-    )[0]
+    )
+    base = base_rows[0] if base_rows else {
+        "total": 0, "hosts": 0, "users": 0, "phases": 0,
+        "first_ts": None, "last_ts": None,
+    }
 
     source_counts = qp(
         project_id,
